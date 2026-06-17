@@ -51,11 +51,12 @@ Everything not needed for that bar is deferred (see the last section).
 ### 1. Language and dependencies: Go, near-stdlib
 
 **Go, compiled to a single static binary.** Rationale: one static binary is the
-literal shape of ntfy-ease (download, run, done); Go cross-compiles trivially for
-the .deb this repo ships; `net/http` gives the HTTP + WebSocket server with almost
-no dependencies; `golang.org/x/crypto/nacl/box` and `nacl/secretbox` give the exact
-X25519 + XSalsa20-Poly1305 primitives the E2E model needs, from a maintained,
-audited library; the attack surface stays small.
+literal shape of ntfy-ease (download, run, done); it is cross-platform and runs
+either in Docker or natively on bare metal with no runtime to install;
+`net/http` gives the HTTP + WebSocket server with almost no dependencies;
+`golang.org/x/crypto/nacl/box` and `nacl/secretbox` give the exact X25519 +
+XSalsa20-Poly1305 primitives the E2E model needs, from a maintained, audited
+library; the attack surface stays small.
 
 Dependency budget for M1, deliberately tiny:
 - `net/http`, `crypto/*`, `encoding/json` from the stdlib.
@@ -67,8 +68,9 @@ Dependency budget for M1, deliberately tiny:
 
 **Trade-off:** vs Rust, Go gives up some compile-time memory-safety strictness and
 has GC pauses (irrelevant at this scale). It buys faster correct delivery and the
-easiest single-binary + .deb story. The repo's other projects are shell/Python;
-nothing constrains the language, so a network daemon picks the best fit, which is Go.
+easiest single-binary, run-in-Docker-or-natively story. The repo's other projects
+are shell/Python; nothing constrains the language, so a network daemon picks the
+best fit, which is Go.
 
 ### 2. Transport: one WebSocket per peer, HTTP for publish-once
 
@@ -253,26 +255,32 @@ So M1 scope stays small and honest:
 
 ---
 
-## Repo and module layout (matches this tree's conventions)
+## Repo and module layout (as built)
+
+doublethink is cross-platform: it runs in Docker or as a single native binary.
+There is deliberately **no Debian/.deb packaging and no systemd unit** (decided
+2026-06-17): the project does not need them, and shipping them would be scope and
+surface for no benefit at this stage.
 
 ```
 doublethink/
-  bin/doublethink              thin launcher / or installed Go binary entrypoint
-  cmd/doublethink/main.go      CLI: serve, channel, pair  (cobra-free, flag-based)
+  cmd/doublethink/             CLI: serve, channel create, invite, pair, confirm (flag-based)
   internal/broker/             core: channels, fan-out, subscriptions, delivery
-  internal/transport/          WebSocket + HTTP/SSE handlers
-  internal/auth/               challenge/response, per-channel authz, channel tokens
-  internal/crypto/             X25519/HKDF/secretbox helpers for the CLIENT side + tests
+  internal/transport/          WebSocket + HTTP/SSE handlers + loopback admin/pairing API
+  internal/auth/               Ed25519 challenge/response, per-channel authz, state persistence
+  internal/pairing/            single-use invite codes + SAS (MITM-resistant pairing)
+  internal/clientcrypto/       X25519/HKDF/secretbox helpers for the CLIENT side + tests
   internal/envelope/           the fixed envelope type + (de)serialization
-  systemd/doublethink.service  daemon unit (startup log carries the disclaimer)
-  debian/                      control/changelog/postinst/postrm/source/format/compat/rules
-  scripts/build-deb.sh         portable .deb build (template from inhibit-charge)
+  Dockerfile                   multi-stage build -> distroless static image
+  docker-compose.yml           serve from mounted source (default dev path)
+  docker-compose.build.yml     run the built image
+  scripts/smoke.sh             end-to-end smoke test of the real binary
   docs/index.html              project Pages site (+ disclaimer), robots.txt, sitemap.xml
   docs/DESIGN-M1.md            this file
-  .github/workflows/ci.yml     go vet + go test + build .deb + Release on tag
+  .github/workflows/ci.yml     go vet + go test + docker build + Release on tag
 ```
 
-Note: the broker does not need `internal/crypto` to encrypt (it never sees plaintext);
+Note: the broker does not need `internal/clientcrypto` to encrypt (it never sees plaintext);
 that package exists for the **client/CLI** side and for tests that prove the broker
 cannot read sealed payloads. Three similar lines beat a premature abstraction; the
 store-behind-an-interface seam (decision 3) is the only forward-looking seam, and it
@@ -333,6 +341,10 @@ earns its place because retention is the very next milestone.
 6. `internal/crypto` (client side) + a reference CLI client that seals/opens, proving
    test 3 (broker holds only ciphertext).
 7. `cmd/doublethink`: `serve`, `channel create`, `pair`; the setup flow from decision 7.
-8. Point CodeSpeak's client at it in place of the mock; prove zero-change replacement.
-9. Packaging: `scripts/build-deb.sh`, `debian/`, `systemd/`, `docs/index.html` with the
-   disclaimer on every required surface; CI; then the publish pipeline.
+8. Distribution: `Dockerfile` (multi-stage to distroless), `docker-compose.yml`
+   (serve from mounted source) and `docker-compose.build.yml` (run the image); the
+   native single-binary path is just `go build`. No Debian/.deb, no systemd.
+9. Publish: `docs/index.html` with the disclaimer on every required surface; CI
+   (vet + test + docker build + Release on tag); then GitHub repo + Pages + hub /
+   profile / website cards. (CodeSpeak adopts the published broker and adapts its
+   client to the keypair credential; see the deviation note above.)

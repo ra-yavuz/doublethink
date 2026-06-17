@@ -12,9 +12,9 @@ channels you can trust with real traffic.
 > and tested: a runnable broker you can stand up, create a private channel on,
 > pair two authenticated peers, and exchange end-to-end-encrypted streamed
 > messages the broker cannot read, plus opt-in plaintext topics. The design is in
-> [`docs/DESIGN-M1.md`](docs/DESIGN-M1.md). Not yet packaged for release (no
-> tagged version, `.deb`, or hosted offering yet). Start with [`GOAL.md`](GOAL.md)
-> for the canonical endgoal.
+> [`docs/DESIGN-M1.md`](docs/DESIGN-M1.md). It is cross-platform: run it in Docker
+> or as a single native binary. No hosted offering yet. Start with
+> [`GOAL.md`](GOAL.md) for the canonical endgoal.
 
 ## Quickstart
 
@@ -64,8 +64,7 @@ curl -sN http://localhost:8080/subscribe/mytopic   # Server-Sent Events stream
 ```
 
 The public path refuses any name registered as a private channel, so a private
-channel can never be reached through the open path. Install options also include a
-`.deb` (see `scripts/build-deb.sh`) with a hardened systemd unit. See
+channel can never be reached through the open path. See
 [`docs/DESIGN-M1.md`](docs/DESIGN-M1.md) for the crypto and threat model.
 
 ## Security is the point, not a feature

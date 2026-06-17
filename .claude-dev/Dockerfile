@@ -2,10 +2,10 @@
 # Go 1.25 matches the go.mod floor (x/crypto v0.53+ requires go >= 1.25).
 FROM golang:1.25-bookworm
 
-# git + ca-certificates for module fetches and repo-touching tests; dpkg-dev for
-# the portable .deb build (scripts/build-deb.sh); curl for smoke-test health checks.
+# git + ca-certificates for module fetches and repo-touching tests; curl for the
+# smoke-test health checks.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates dpkg-dev curl \
+    && apt-get install -y --no-install-recommends git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /work

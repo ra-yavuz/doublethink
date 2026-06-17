@@ -1,15 +1,3 @@
-# Debian build artifacts
-*.deb
-*.buildinfo
-*.changes
-*.dsc
-*.tar.*
-debian/.debhelper/
-debian/files
-debian/doublethink/
-debian/doublethink.substvars
-debian/debhelper-build-stamp
-
 # Editor / OS
 *~
 *.swp
@@ -19,12 +7,17 @@ debian/debhelper-build-stamp
 build/
 dist/
 
-# Secrets / local config (never commit)
+# Secrets / local config and peer identity files (never commit)
 *.key
 *.pem
 .env
 .env.*
 !.env.example
+*-identity.json
+agent.json
+pwa.json
+*.state.json
+state.json
 
 # Shell / tooling state that lands in the working dir
 .bash_history
