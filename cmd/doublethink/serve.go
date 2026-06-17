@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", ":8080", "listen address for the broker (channels, accounts, create, plaintext topics)")
+	allowedOrigins := fs.String("allowed-origins", "", "comma-separated browser origins allowed cross-origin (CORS + WebSocket), e.g. https://ra-yavuz.github.io; empty = same-origin only")
 	dbPath := fs.String("db", defaultDBPath(), "path to the SQLite database (channels, accounts, retained messages)")
 	legacyJSON := fs.String("migrate-json", "", "optional path to an M1 state.json to import once (grandfathers existing channels)")
 	sweep := fs.Duration("sweep-interval", time.Minute, "how often to prune expired retained messages")
@@ -74,7 +76,18 @@ func runServe(args []string) error {
 	ad, adStatus := admin.FromEnv()
 	lim := limits.DefaultLimits()
 
-	srv := transport.NewWithConfig(transport.Config{Broker: b, Reg: reg, Store: st, Admin: ad, Limits: lim})
+	// Default allow-list: the canonical Pages demo origin. The broker hosts a live
+	// browser demo at ra-yavuz.github.io/doublethink, which must be able to call the
+	// API cross-origin; allowing exactly that origin by default means the demo works
+	// without a stack-command change. --allowed-origins ADDS to this (it never
+	// becomes "*"); pass it to permit additional origins.
+	origins := []string{"https://ra-yavuz.github.io"}
+	for _, o := range strings.Split(*allowedOrigins, ",") {
+		if o = strings.TrimSpace(o); o != "" && o != origins[0] {
+			origins = append(origins, o)
+		}
+	}
+	srv := transport.NewWithConfig(transport.Config{Broker: b, Reg: reg, Store: st, Admin: ad, Limits: lim, AllowedOrigins: origins})
 
 	// Startup log carries the no-warranty disclaimer (project rule 3).
 	log.Printf("doublethink starting")

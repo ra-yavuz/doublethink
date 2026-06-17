@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -44,12 +45,13 @@ import (
 // Server ties the broker, the in-memory auth registry, the persistent store, the
 // rate limiters, and the admin layer to HTTP handlers.
 type Server struct {
-	broker *broker.Broker
-	reg    *auth.Registry
-	store  *store.Store // may be nil in the legacy/test constructor (no retention)
-	admin  *admin.Admin
-	lim    limits.Defaults
-	mux    *http.ServeMux
+	broker  *broker.Broker
+	reg     *auth.Registry
+	store   *store.Store // may be nil in the legacy/test constructor (no retention)
+	admin   *admin.Admin
+	lim     limits.Defaults
+	allowed []string // CORS / WS allow-list of browser origins (never "*")
+	mux     *http.ServeMux
 
 	createLim *limits.RateLimiter // channel creation per IP
 	pubChan   *limits.RateLimiter // publish per channel
@@ -64,6 +66,12 @@ type Config struct {
 	Store  *store.Store
 	Admin  *admin.Admin
 	Limits limits.Defaults
+	// AllowedOrigins is the explicit allow-list of browser origins permitted to
+	// call the API cross-origin (CORS) and open a cross-origin WebSocket, e.g.
+	// "https://ra-yavuz.github.io" for the Pages demo. Empty means same-origin
+	// only (no CORS headers emitted, browser WS from another origin rejected).
+	// It is an allow-list on purpose; never "*".
+	AllowedOrigins []string
 }
 
 // NewWithConfig builds a fully-wired Server.
@@ -78,6 +86,7 @@ func NewWithConfig(cfg Config) *Server {
 		store:     cfg.Store,
 		admin:     ad,
 		lim:       cfg.Limits,
+		allowed:   cfg.AllowedOrigins,
 		mux:       http.NewServeMux(),
 		createLim: limits.NewPerHour(cfg.Limits.CreatePerIPPerHour, 3),
 		pubChan:   limits.NewPerMinute(cfg.Limits.PublishPerChanPerMin, 20),
@@ -104,8 +113,51 @@ func New(b *broker.Broker, reg *auth.Registry) *Server {
 }
 
 // Handler returns the HTTP handler for serving (so the caller owns the
-// http.Server, TLS config, and listen address).
-func (s *Server) Handler() http.Handler { return s.mux }
+// http.Server, TLS config, and listen address). It wraps the mux with CORS so a
+// browser on an allowed origin (the Pages demo) can call the API; with no allowed
+// origins the wrapper is a passthrough (same-origin only).
+func (s *Server) Handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && s.originAllowed(origin) {
+			h := w.Header()
+			h.Set("Access-Control-Allow-Origin", origin)
+			h.Set("Vary", "Origin")
+			h.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Doublethink-Account")
+			h.Set("Access-Control-Max-Age", "600")
+		}
+		// Preflight: answer OPTIONS here without hitting the routes.
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		s.mux.ServeHTTP(w, r)
+	})
+}
+
+// originAllowed reports whether a browser Origin is on the explicit allow-list.
+// Exact match only; never a wildcard.
+func (s *Server) originAllowed(origin string) bool {
+	for _, a := range s.allowed {
+		if a == origin {
+			return true
+		}
+	}
+	return false
+}
+
+// wsOriginHosts maps the allowed origins to the host patterns coder/websocket's
+// Accept checks against (it compares the request Origin host to OriginPatterns).
+func (s *Server) wsOriginHosts() []string {
+	hosts := make([]string, 0, len(s.allowed))
+	for _, a := range s.allowed {
+		if u, err := url.Parse(a); err == nil && u.Host != "" {
+			hosts = append(hosts, u.Host)
+		}
+	}
+	return hosts
+}
 
 const (
 	handshakeTimeout = 10 * time.Second
@@ -363,7 +415,13 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.conns.Release(ip)
 
-	c, err := websocket.Accept(w, r, nil)
+	var acceptOpts *websocket.AcceptOptions
+	if hosts := s.wsOriginHosts(); len(hosts) > 0 {
+		// Allow the configured browser origins to open a cross-origin WebSocket.
+		// Without this, coder/websocket rejects any cross-origin handshake.
+		acceptOpts = &websocket.AcceptOptions{OriginPatterns: hosts}
+	}
+	c, err := websocket.Accept(w, r, acceptOpts)
 	if err != nil {
 		return // Accept already wrote an error
 	}
