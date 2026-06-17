@@ -27,6 +27,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"hash"
@@ -80,6 +81,50 @@ func (id *Identity) ECDHPublic() [keySize]byte { return id.ecdhPub }
 
 // Sign signs a broker challenge with the Ed25519 identity key (used by package auth).
 func (id *Identity) Sign(challenge []byte) []byte { return ed25519.Sign(id.signPriv, challenge) }
+
+// PersistedIdentity is the serialisable form of an Identity. It contains PRIVATE
+// keys and must be stored only on the owning peer's machine, never sent to the
+// broker. All fields are base64.
+type PersistedIdentity struct {
+	SignPriv string `json:"sign_priv"` // Ed25519 private key (seed+pub, 64 bytes)
+	SignPub  string `json:"sign_pub"`  // Ed25519 public key
+	ECDHPriv string `json:"ecdh_priv"` // X25519 private scalar
+	ECDHPub  string `json:"ecdh_pub"`  // X25519 public key
+}
+
+// Export serialises an Identity for storage on the owning peer's machine.
+func (id *Identity) Export() PersistedIdentity {
+	return PersistedIdentity{
+		SignPriv: base64.StdEncoding.EncodeToString(id.signPriv),
+		SignPub:  base64.StdEncoding.EncodeToString(id.SignPub),
+		ECDHPriv: base64.StdEncoding.EncodeToString(id.ecdhPriv[:]),
+		ECDHPub:  base64.StdEncoding.EncodeToString(id.ecdhPub[:]),
+	}
+}
+
+// ImportIdentity reconstructs an Identity from its persisted form.
+func ImportIdentity(p PersistedIdentity) (*Identity, error) {
+	signPriv, err := base64.StdEncoding.DecodeString(p.SignPriv)
+	if err != nil || len(signPriv) != ed25519.PrivateKeySize {
+		return nil, errors.New("bad sign_priv")
+	}
+	signPub, err := base64.StdEncoding.DecodeString(p.SignPub)
+	if err != nil || len(signPub) != ed25519.PublicKeySize {
+		return nil, errors.New("bad sign_pub")
+	}
+	ecdhPriv, err := base64.StdEncoding.DecodeString(p.ECDHPriv)
+	if err != nil || len(ecdhPriv) != keySize {
+		return nil, errors.New("bad ecdh_priv")
+	}
+	ecdhPub, err := base64.StdEncoding.DecodeString(p.ECDHPub)
+	if err != nil || len(ecdhPub) != keySize {
+		return nil, errors.New("bad ecdh_pub")
+	}
+	id := &Identity{SignPub: ed25519.PublicKey(signPub), signPriv: ed25519.PrivateKey(signPriv)}
+	copy(id.ecdhPriv[:], ecdhPriv)
+	copy(id.ecdhPub[:], ecdhPub)
+	return id, nil
+}
 
 // Session is the derived per-channel crypto state for one peer: its two
 // per-direction keys. send is the key this peer encrypts with; recv is the key it

@@ -9,5 +9,10 @@ RUN apt-get update \
 
 WORKDIR /work
 
+# The repo is bind-mounted from the host (a different uid), so git inside the
+# container would refuse to read it ("dubious ownership"), which breaks Go's VCS
+# build stamping. Mark /work safe so `go build` can stamp the revision normally.
+RUN git config --global --add safe.directory /work
+
 # Default to an interactive shell; run.sh mounts the source over /work.
 CMD ["bash"]
