@@ -76,14 +76,17 @@ func runServe(args []string) error {
 	ad, adStatus := admin.FromEnv()
 	lim := limits.DefaultLimits()
 
-	// Default allow-list: the canonical Pages demo origin. The broker hosts a live
-	// browser demo at ra-yavuz.github.io/doublethink, which must be able to call the
-	// API cross-origin; allowing exactly that origin by default means the demo works
-	// without a stack-command change. --allowed-origins ADDS to this (it never
-	// becomes "*"); pass it to permit additional origins.
-	origins := []string{"https://ra-yavuz.github.io"}
+	// doublethink is an API meant to be called cross-origin (browsers, PWAs, web
+	// apps), so CORS is OPEN by default: any origin may call it. This does not
+	// widen the attack surface, the broker has no cookies or ambient session, so
+	// auth is always an explicit Bearer key or the in-band channel-secret
+	// challenge; a malicious origin can only do what curl already can, bounded by
+	// the rate limits. (Allow-Origin "*" is therefore correct and is never paired
+	// with credentials.) Pass --allowed-origins to RESTRICT to a fixed allow-list
+	// for a private deployment.
+	var origins []string
 	for _, o := range strings.Split(*allowedOrigins, ",") {
-		if o = strings.TrimSpace(o); o != "" && o != origins[0] {
+		if o = strings.TrimSpace(o); o != "" {
 			origins = append(origins, o)
 		}
 	}

@@ -72,18 +72,36 @@ func TestCORSPreflight(t *testing.T) {
 	}
 }
 
-// With no allowed origins (default), no CORS headers are emitted (same-origin only).
-func TestNoCORSByDefault(t *testing.T) {
+// Default (no allow-list) is OPEN CORS: any origin gets "*". doublethink is meant
+// to be used cross-origin and has no cookies/session, so this is safe.
+func TestCORSOpenByDefault(t *testing.T) {
 	srv := httptest.NewServer(transport.New(broker.New(), auth.NewRegistry()).Handler())
 	defer srv.Close()
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/healthz", nil)
-	req.Header.Set("Origin", allowedOrigin)
+	req.Header.Set("Origin", "https://anything.example.com")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
-		t.Fatalf("Allow-Origin = %q with no allow-list, want empty", got)
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("default Allow-Origin = %q, want * (open)", got)
+	}
+}
+
+// A restricted deployment (allow-list set) reflects only allowed origins and never
+// pairs the wildcard with credentials.
+func TestCORSRestrictedDisallowed(t *testing.T) {
+	url := corsServer(t) // configured with only allowedOrigin
+	req, _ := http.NewRequest(http.MethodGet, url+"/healthz", nil)
+	req.Header.Set("Origin", "https://evil.example.com")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got := resp.Header.Get("Access-Control-Allow-Origin")
+	if got == "*" || got == "https://evil.example.com" {
+		t.Fatalf("restricted deployment leaked origin: Allow-Origin = %q", got)
 	}
 }

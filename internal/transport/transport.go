@@ -66,11 +66,12 @@ type Config struct {
 	Store  *store.Store
 	Admin  *admin.Admin
 	Limits limits.Defaults
-	// AllowedOrigins is the explicit allow-list of browser origins permitted to
-	// call the API cross-origin (CORS) and open a cross-origin WebSocket, e.g.
-	// "https://ra-yavuz.github.io" for the Pages demo. Empty means same-origin
-	// only (no CORS headers emitted, browser WS from another origin rejected).
-	// It is an allow-list on purpose; never "*".
+	// AllowedOrigins RESTRICTS cross-origin access to this explicit list (CORS +
+	// WebSocket). EMPTY means OPEN: any origin may call the API and open a WS. Open
+	// is the default because doublethink is meant to be used cross-origin and has
+	// no cookies or ambient session for a malicious origin to ride; auth is always
+	// an explicit Bearer key or the in-band secret challenge. Set this only to lock
+	// a private deployment to known origins.
 	AllowedOrigins []string
 }
 
@@ -117,15 +118,24 @@ func New(b *broker.Broker, reg *auth.Registry) *Server {
 // browser on an allowed origin (the Pages demo) can call the API; with no allowed
 // origins the wrapper is a passthrough (same-origin only).
 func (s *Server) Handler() http.Handler {
+	open := len(s.allowed) == 0
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin != "" && s.originAllowed(origin) {
+		if origin != "" {
 			h := w.Header()
-			h.Set("Access-Control-Allow-Origin", origin)
-			h.Set("Vary", "Origin")
-			h.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Doublethink-Account")
-			h.Set("Access-Control-Max-Age", "600")
+			if open {
+				// Open CORS: reflect any origin. Never combined with credentials
+				// (doublethink has no cookies/session), so this is safe.
+				h.Set("Access-Control-Allow-Origin", "*")
+			} else if s.originAllowed(origin) {
+				h.Set("Access-Control-Allow-Origin", origin)
+				h.Set("Vary", "Origin")
+			}
+			if open || s.originAllowed(origin) {
+				h.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Doublethink-Account")
+				h.Set("Access-Control-Max-Age", "600")
+			}
 		}
 		// Preflight: answer OPTIONS here without hitting the routes.
 		if r.Method == http.MethodOptions {
@@ -137,7 +147,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 // originAllowed reports whether a browser Origin is on the explicit allow-list.
-// Exact match only; never a wildcard.
+// Exact match only.
 func (s *Server) originAllowed(origin string) bool {
 	for _, a := range s.allowed {
 		if a == origin {
@@ -147,16 +157,20 @@ func (s *Server) originAllowed(origin string) bool {
 	return false
 }
 
-// wsOriginHosts maps the allowed origins to the host patterns coder/websocket's
-// Accept checks against (it compares the request Origin host to OriginPatterns).
-func (s *Server) wsOriginHosts() []string {
+// wsAcceptOptions returns the WebSocket Accept options. OPEN (no allow-list) skips
+// the cross-origin check entirely (InsecureSkipVerify); a restricted deployment
+// pins OriginPatterns to the configured hosts.
+func (s *Server) wsAcceptOptions() *websocket.AcceptOptions {
+	if len(s.allowed) == 0 {
+		return &websocket.AcceptOptions{InsecureSkipVerify: true} // open: any origin
+	}
 	hosts := make([]string, 0, len(s.allowed))
 	for _, a := range s.allowed {
 		if u, err := url.Parse(a); err == nil && u.Host != "" {
 			hosts = append(hosts, u.Host)
 		}
 	}
-	return hosts
+	return &websocket.AcceptOptions{OriginPatterns: hosts}
 }
 
 const (
@@ -415,13 +429,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.conns.Release(ip)
 
-	var acceptOpts *websocket.AcceptOptions
-	if hosts := s.wsOriginHosts(); len(hosts) > 0 {
-		// Allow the configured browser origins to open a cross-origin WebSocket.
-		// Without this, coder/websocket rejects any cross-origin handshake.
-		acceptOpts = &websocket.AcceptOptions{OriginPatterns: hosts}
-	}
-	c, err := websocket.Accept(w, r, acceptOpts)
+	c, err := websocket.Accept(w, r, s.wsAcceptOptions())
 	if err != nil {
 		return // Accept already wrote an error
 	}
