@@ -69,11 +69,21 @@ copying a snippet:
 - **Channel namespacing and access mapping.** How channel names map to authorised
   parties, and how name guessing or enumeration is prevented for private
   channels.
-- **Replay and ordering guarantees.** What is promised about duplicate delivery,
-  ordering per channel, and a peer that was briefly offline.
-- **Operator trust model.** For a hosted doublethink, what the operator can and
-  cannot see, stated plainly to the user. (If end-to-end encryption is chosen,
-  this is bounded by design; if not, it must be disclosed.)
+- **Replay and ordering guarantees. DECIDED (M2).** Ephemeral channels are
+  at-most-once and online-only (a peer offline at publish time misses the message).
+  Retained channels (opt-in) store messages with a per-channel monotonic sequence
+  number; a reconnecting peer replays exactly the messages with a higher sequence
+  than the last it saw, in order, then resumes live. Retention is bounded (TTL +
+  per-channel and per-account caps; oldest evicted). See
+  [`DESIGN-M2.md`](DESIGN-M2.md).
+- **Operator trust model. DECIDED (M2), stated plainly.** The operator (and anyone
+  with database access) can see, for every channel: its id, the messages' type/id/
+  timestamp, ciphertext sizes, counts, and timing; and for retained channels, the
+  stored ciphertext blobs. The operator CANNOT read any private-channel payload:
+  payloads are encrypted under a key derived from the shared secret S, which the
+  broker never holds. So doublethink is **payload-blind, not metadata-blind**, and
+  retention widens the visible metadata (stored sizes/timestamps/counts). This is
+  disclosed, not defaulted away.
 
 ## Threat model (what the security posture must withstand)
 
@@ -90,6 +100,26 @@ copying a snippet:
   unintentionally open. Insecurity must require a deliberate, informed choice,
   not be the default outcome of following the quickstart.
 
+## Identity tiers and retention (M2)
+
+doublethink M2 adds three tiers of identity and an opt-in retention store. The
+security-relevant points:
+
+- **Three tiers.** Anonymous (ephemeral private channels and public plaintext
+  topics only, under per-IP rate/connection limits); an **account API key**
+  (`POST /account`; required to create a *retained* channel; quotas attributed to
+  it; the broker stores only a hash of the key, never the key); and an **operator
+  admin key** (set in the broker's environment as `DOUBLETHINK_ADMIN_KEY`; raises
+  limits for preferred channels and reads usage metadata). The admin key grants
+  metadata/limit control ONLY, never payload access. It is fail-safe disabled when
+  unset, never logged, and compared in constant time.
+- **No anonymous retained channels.** Retention consumes storage, so it requires
+  an account that quotas can be charged against. Anonymous use stays unbounded only
+  in the ephemeral/no-storage sense, under tight per-IP limits.
+- **Retained ciphertext is user data.** It expires (TTL), can be evicted (ring
+  buffer) or deleted, and counts to quota. It is stored as ciphertext the broker
+  cannot read. Treat it, and the metadata around it, accordingly.
+
 ## Out of scope (stated so it is not mistaken for covered)
 
 - doublethink does not promise to defend against a fully compromised endpoint: if
@@ -97,6 +127,11 @@ copying a snippet:
   compromised. Endpoint security is the user's responsibility.
 - doublethink does not vouch for message *content*; it transports payloads. What
   CodeSpeak or any other consumer puts in a payload is that consumer's concern.
+- **No per-sender non-repudiation and no forward secrecy (yet).** The shared-secret
+  model is symmetric: any holder of S can both send and read, so a message does not
+  prove which party sent it, one party cannot be evicted without rotating S, and a
+  leaked S exposes past retained ciphertext. These are deliberate, documented
+  limits, not oversights; stronger properties are a future step.
 
 This is the security baseline any doublethink implementation must meet or exceed.
 Given the subject matter (auth and crypto), the implementation of these

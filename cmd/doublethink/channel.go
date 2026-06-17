@@ -24,6 +24,10 @@ func runChannel(args []string) error {
 	fs := flag.NewFlagSet("channel create", flag.ContinueOnError)
 	server := fs.String("server", "http://127.0.0.1:8080", "base URL of the doublethink broker")
 	prefix := fs.String("prefix", "", "optional human prefix for the channel id (e.g. codespeak)")
+	retain := fs.Bool("retain", false, "retain messages so an offline peer can catch up (requires an account)")
+	account := fs.String("account", "", "account id (required with --retain)")
+	apiKey := fs.String("api-key", "", "account API key (required with --retain)")
+	ttlSec := fs.Int64("ttl-sec", 0, "retention TTL in seconds (0 = server default; capped at the server max)")
 	quiet := fs.Bool("quiet", false, "print only 'channel<TAB>secret' (for scripting)")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: doublethink channel create [flags]\n\n")
@@ -31,6 +35,9 @@ func runChannel(args []string) error {
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
+	}
+	if *retain && (*account == "" || *apiKey == "") {
+		return fmt.Errorf("--retain requires --account and --api-key (run 'doublethink account create')")
 	}
 
 	// High-entropy, unguessable channel id (the name is not the gate, the secret
@@ -51,8 +58,16 @@ func runChannel(args []string) error {
 		return err
 	}
 
-	req := map[string]string{"channel": id, "auth_key": authKey}
-	if err := postJSON(*server, "/channel", req, nil); err != nil {
+	req := map[string]any{"channel": id, "auth_key": authKey, "retain": *retain}
+	var headers map[string]string
+	if *retain {
+		req["ttl_sec"] = *ttlSec
+		headers = map[string]string{
+			"Authorization":         "Bearer " + *apiKey,
+			"X-Doublethink-Account": *account,
+		}
+	}
+	if err := postJSONAuth(*server, "/channel", req, nil, headers); err != nil {
 		return fmt.Errorf("creating channel: %w", err)
 	}
 
@@ -60,12 +75,16 @@ func runChannel(args []string) error {
 		fmt.Printf("%s\t%s\n", id, secret)
 		return nil
 	}
-	fmt.Printf("created private channel:\n")
+	kind := "ephemeral (online-only)"
+	if *retain {
+		kind = "retained (offline peers can catch up)"
+	}
+	fmt.Printf("created private channel (%s):\n", kind)
 	fmt.Printf("  channel: %s\n", id)
 	fmt.Printf("  secret:  %s\n\n", secret)
 	fmt.Printf("Share the secret with the other party over a trusted channel. Anyone who\n")
 	fmt.Printf("holds it can join and read this channel; the broker never sees it and cannot\n")
-	fmt.Printf("read your messages. To use the channel, both parties connect with --secret.\n")
+	fmt.Printf("read your messages. Both parties connect to the channel using this secret.\n")
 	return nil
 }
 

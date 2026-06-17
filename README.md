@@ -7,15 +7,16 @@ effectively public. doublethink keeps the minutes-to-set-up ergonomics and adds
 the thing ntfy deliberately omits: identity, authentication, and private
 channels you can trust with real traffic.
 
-> **Status: M1 working, pre-release.** The prior-art research is done
-> ([`docs/RESEARCH.md`](docs/RESEARCH.md)) and the first milestone is implemented
-> and tested: a runnable broker you can stand up, create a private channel on with
-> one request, and have two parties who share its secret exchange
-> end-to-end-encrypted streamed messages the broker cannot read, plus opt-in
-> plaintext topics. The design is in
-> [`docs/DESIGN-M1.md`](docs/DESIGN-M1.md). It is cross-platform: run it in Docker
-> or as a single native binary. No hosted offering yet. Start with
-> [`GOAL.md`](GOAL.md) for the canonical endgoal.
+> **Status: M2 working.** Prior-art research is done
+> ([`docs/RESEARCH.md`](docs/RESEARCH.md)). M1 gives a runnable broker you can
+> stand up and create a private channel on with one request, so two parties who
+> share its secret exchange end-to-end-encrypted streamed messages the broker
+> cannot read ([`docs/DESIGN-M1.md`](docs/DESIGN-M1.md)). M2 adds the pieces a
+> public instance needs: accounts, opt-in message retention (so an offline peer
+> can catch up), TTL aging, per-account and per-channel quotas, and abuse controls
+> ([`docs/DESIGN-M2.md`](docs/DESIGN-M2.md)). It is cross-platform: run it in
+> Docker or as a single native binary. Start with [`GOAL.md`](GOAL.md) for the
+> canonical endgoal.
 
 ## Quickstart
 
@@ -62,6 +63,54 @@ curl -sN http://localhost:8080/subscribe/mytopic   # Server-Sent Events stream
 The public path refuses any name registered as a private channel, so a private
 channel can never be reached through the open path. See
 [`docs/DESIGN-M1.md`](docs/DESIGN-M1.md) for the crypto and threat model.
+
+### Retained channels (catch up after being offline)
+
+A channel created as above is **ephemeral**: messages are delivered to whoever is
+connected and then gone (online-only, anonymous, ntfy-easy). For a peer that may be
+offline at publish time (a backgrounded app, a reconnecting agent), create a
+**retained** channel instead: the broker stores its messages so a reconnecting peer
+can catch up. Retained channels require an account:
+
+```
+# 1. Get an account API key (shown once; the broker stores only a hash of it).
+./doublethink account create
+#   account: <id>
+#   api key: <key>
+
+# 2. Create a retained channel with that key.
+./doublethink channel create --prefix codespeak --retain \
+    --account <id> --api-key <key>
+```
+
+On reconnect, a subscriber sends the last sequence number it saw and receives only
+the messages it missed, in order, then resumes live. Stored messages are still
+end-to-end encrypted ciphertext: the broker keeps them but cannot read them. The
+shared-secret model is otherwise unchanged.
+
+Anonymous clients can still create ephemeral channels and use public topics, but
+**not** retained ones (that path needs an account so storage can be attributed and
+bounded).
+
+### Limits and accounts
+
+A public instance bounds resource use. Retention is capped per channel (a message
+count and a byte size, oldest evicted past either) and aged out by a TTL (default
+24h, max 7d). Each account has a storage quota (256 MiB) and a channel cap (100).
+Messages are size-capped (256 KiB), and channel creation, publishing, and
+connections are rate-limited per source. An operator can raise the limits for a
+preferred channel with `doublethink admin set-limit` (authenticated by the
+`DOUBLETHINK_ADMIN_KEY` the broker runs with); the admin key controls limits and
+reads usage metadata only, it never grants access to any channel's payloads. The
+full set of defaults is in [`docs/DESIGN-M2.md`](docs/DESIGN-M2.md).
+
+**What retention costs you to know:** stored messages are user data. They expire,
+can be evicted to stay within caps, and count against quota. End-to-end encryption
+still hides payloads, but a retained channel exposes more to the operator than an
+ephemeral one: stored message sizes, timestamps, and counts are visible (the broker
+still cannot read the payloads). The model is also symmetric, both holders of a
+secret can publish and read, so there is no per-sender attribution and no way to
+remove one party without rotating the secret, and there is no forward secrecy yet.
 
 ## Security is the point, not a feature
 

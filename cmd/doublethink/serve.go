@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -13,15 +12,20 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ra-yavuz/doublethink/internal/admin"
 	"github.com/ra-yavuz/doublethink/internal/auth"
 	"github.com/ra-yavuz/doublethink/internal/broker"
+	"github.com/ra-yavuz/doublethink/internal/limits"
+	"github.com/ra-yavuz/doublethink/internal/store"
 	"github.com/ra-yavuz/doublethink/internal/transport"
 )
 
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	addr := fs.String("addr", ":8080", "listen address for the broker (channels, create, plaintext topics)")
-	statePath := fs.String("state", defaultStatePath(), "path to the channel state file")
+	addr := fs.String("addr", ":8080", "listen address for the broker (channels, accounts, create, plaintext topics)")
+	dbPath := fs.String("db", defaultDBPath(), "path to the SQLite database (channels, accounts, retained messages)")
+	legacyJSON := fs.String("migrate-json", "", "optional path to an M1 state.json to import once (grandfathers existing channels)")
+	sweep := fs.Duration("sweep-interval", time.Minute, "how often to prune expired retained messages")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: doublethink serve [flags]\n\n")
 		fs.PrintDefaults()
@@ -30,35 +34,65 @@ func runServe(args []string) error {
 		return err
 	}
 
-	b := broker.New()
-	reg := auth.NewRegistry()
-
-	// Load persisted channels if the state file exists.
-	if err := loadState(*statePath, reg); err != nil {
-		return fmt.Errorf("loading state %s: %w", *statePath, err)
-	}
-	// Persist on every registry change.
-	reg.OnChange(func() {
-		if err := saveState(*statePath, reg); err != nil {
-			log.Printf("warning: could not persist state to %s: %v", *statePath, err)
+	// Store (channels, accounts, retained messages).
+	if dir := filepath.Dir(*dbPath); dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("creating db dir: %w", err)
 		}
-	})
+	}
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fmt.Errorf("opening store %s: %w", *dbPath, err)
+	}
+	defer st.Close()
 
-	srv := transport.New(b, reg)
+	// One-time migration from an M1 JSON state file, if given. Idempotent.
+	if *legacyJSON != "" {
+		n, err := st.MigrateLegacyJSON(*legacyJSON)
+		if err != nil {
+			return fmt.Errorf("migrating %s: %w", *legacyJSON, err)
+		}
+		if n > 0 {
+			log.Printf("migrated %d channel(s) from %s (grandfathered, ephemeral)", n, *legacyJSON)
+		}
+	}
 
-	// The startup log carries the no-warranty disclaimer (project rule 3).
+	// Load the in-memory admission registry from the store so attach does not hit
+	// SQLite on every connection.
+	reg := auth.NewRegistry()
+	kauths, err := st.AllChannelKAuth()
+	if err != nil {
+		return fmt.Errorf("loading channels: %w", err)
+	}
+	snap := make(map[string]string, len(kauths))
+	for id, ka := range kauths {
+		snap[id] = ka
+	}
+	reg.Load(snap)
+
+	b := broker.New()
+	ad, adStatus := admin.FromEnv()
+	lim := limits.DefaultLimits()
+
+	srv := transport.NewWithConfig(transport.Config{Broker: b, Reg: reg, Store: st, Admin: ad, Limits: lim})
+
+	// Startup log carries the no-warranty disclaimer (project rule 3).
 	log.Printf("doublethink starting")
 	log.Printf("NO WARRANTY: provided as is; you are responsible for deployment, security, and the data that flows through it. The author is not liable for any harm, however caused.")
-	log.Printf("listening on %s (channels, create, plaintext topics)", *addr)
-	log.Printf("state file: %s", *statePath)
+	log.Printf("listening on %s", *addr)
+	log.Printf("db: %s  | %s", *dbPath, adStatus)
+	log.Printf("loaded %d channel(s)", len(kauths))
 
 	public := &http.Server{Addr: *addr, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- public.ListenAndServe() }()
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// TTL sweeper: prune expired retained messages periodically.
+	go runSweeper(ctx, st, *sweep)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- public.ListenAndServe() }()
 
 	select {
 	case <-ctx.Done():
@@ -75,55 +109,34 @@ func runServe(args []string) error {
 	}
 }
 
-// stateFile is the on-disk shape of the channel registry. It holds only channel
-// ids and their K_auth (base32). It does NOT hold the shared secret S or the
-// encryption key, so the state file alone cannot read any private-channel payload.
-type stateFile struct {
-	Channels map[string]string `json:"channels"` // channel id -> base32 K_auth
+// runSweeper prunes expired retained messages on a fixed interval until ctx is done.
+func runSweeper(ctx context.Context, st *store.Store, every time.Duration) {
+	if every <= 0 {
+		every = time.Minute
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if n, err := st.PruneExpired(); err != nil {
+				log.Printf("sweeper: prune error: %v", err)
+			} else if n > 0 {
+				log.Printf("sweeper: pruned %d expired message(s)", n)
+			}
+		}
+	}
 }
 
-func defaultStatePath() string {
-	if x := os.Getenv("DOUBLETHINK_STATE"); x != "" {
+func defaultDBPath() string {
+	if x := os.Getenv("DOUBLETHINK_DB"); x != "" {
 		return x
 	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
-		return "doublethink-state.json"
+		return "doublethink.db"
 	}
-	return filepath.Join(dir, "doublethink", "state.json")
-}
-
-func loadState(path string, reg *auth.Registry) error {
-	b, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nil // fresh start
-	}
-	if err != nil {
-		return err
-	}
-	var sf stateFile
-	if err := json.Unmarshal(b, &sf); err != nil {
-		return err
-	}
-	reg.Load(sf.Channels)
-	return nil
-}
-
-func saveState(path string, reg *auth.Registry) error {
-	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-	}
-	sf := stateFile{Channels: reg.Snapshot()}
-	b, err := json.MarshalIndent(sf, "", "  ")
-	if err != nil {
-		return err
-	}
-	// Write atomically via a temp file + rename so a crash cannot truncate state.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return filepath.Join(dir, "doublethink", "doublethink.db")
 }

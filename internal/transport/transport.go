@@ -25,36 +25,82 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/ra-yavuz/doublethink/internal/account"
+	"github.com/ra-yavuz/doublethink/internal/admin"
 	"github.com/ra-yavuz/doublethink/internal/auth"
 	"github.com/ra-yavuz/doublethink/internal/broker"
 	"github.com/ra-yavuz/doublethink/internal/clientcrypto"
 	"github.com/ra-yavuz/doublethink/internal/envelope"
+	"github.com/ra-yavuz/doublethink/internal/limits"
+	"github.com/ra-yavuz/doublethink/internal/store"
 )
 
-// Server ties the broker and the auth registry to HTTP handlers.
+// Server ties the broker, the in-memory auth registry, the persistent store, the
+// rate limiters, and the admin layer to HTTP handlers.
 type Server struct {
 	broker *broker.Broker
 	reg    *auth.Registry
+	store  *store.Store // may be nil in the legacy/test constructor (no retention)
+	admin  *admin.Admin
+	lim    limits.Defaults
 	mux    *http.ServeMux
+
+	createLim *limits.RateLimiter // channel creation per IP
+	pubChan   *limits.RateLimiter // publish per channel
+	conns     *limits.ConnCounter // concurrent WS connections per IP
 }
 
-// New builds a Server with its routes registered.
-func New(b *broker.Broker, reg *auth.Registry) *Server {
-	s := &Server{broker: b, reg: reg, mux: http.NewServeMux()}
+// Config wires the M2 dependencies. store/admin may be nil (then retention and
+// admin are simply unavailable; the broker still serves ephemeral + public).
+type Config struct {
+	Broker *broker.Broker
+	Reg    *auth.Registry
+	Store  *store.Store
+	Admin  *admin.Admin
+	Limits limits.Defaults
+}
+
+// NewWithConfig builds a fully-wired Server.
+func NewWithConfig(cfg Config) *Server {
+	ad := cfg.Admin
+	if ad == nil {
+		ad, _ = admin.From("") // disabled
+	}
+	s := &Server{
+		broker:    cfg.Broker,
+		reg:       cfg.Reg,
+		store:     cfg.Store,
+		admin:     ad,
+		lim:       cfg.Limits,
+		mux:       http.NewServeMux(),
+		createLim: limits.NewPerHour(cfg.Limits.CreatePerIPPerHour, 3),
+		pubChan:   limits.NewPerMinute(cfg.Limits.PublishPerChanPerMin, 20),
+		conns:     limits.NewConnCounter(cfg.Limits.ConnectionsPerIP),
+	}
+	s.mux.HandleFunc("/account", s.handleCreateAccount)
 	s.mux.HandleFunc("/channel", s.handleCreateChannel)
 	s.mux.HandleFunc("/ws", s.handleWS)
 	s.mux.HandleFunc("/publish/", s.handlePublicPublish)
 	s.mux.HandleFunc("/subscribe/", s.handlePublicSubscribe)
+	s.mux.HandleFunc("/admin/limit", s.handleAdminLimit)
 	s.mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	return s
+}
+
+// New is the legacy constructor (broker + in-memory auth only, no store/admin).
+// Retained channels and accounts are unavailable; ephemeral private channels and
+// public topics work. Kept for tests and minimal deployments.
+func New(b *broker.Broker, reg *auth.Registry) *Server {
+	return NewWithConfig(Config{Broker: b, Reg: reg, Limits: limits.DefaultLimits()})
 }
 
 // Handler returns the HTTP handler for serving (so the caller owns the
@@ -64,21 +110,113 @@ func (s *Server) Handler() http.Handler { return s.mux }
 const (
 	handshakeTimeout = 10 * time.Second
 	writeTimeout     = 10 * time.Second
+	maxCatchUp       = 1000
 )
+
+// clientIP extracts a rate-limit key from the request: the X-Forwarded-For first
+// hop if present (we sit behind primergy's nginx), else the remote address. This
+// is best-effort; a determined abuser can spoof XFF, but combined with global caps
+// it bounds casual abuse, which is the M2 intent.
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// --- accounts ---
+
+// handleCreateAccount issues a new account + API key. The key is returned ONCE; the
+// broker stores only its hash. Rate-limited per IP (reuses the create limiter) to
+// bound anonymous account farming.
+func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.store == nil {
+		http.Error(w, "accounts not available on this instance", http.StatusNotImplemented)
+		return
+	}
+	if !s.createLim.Allow("acct:" + clientIP(r)) {
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+		return
+	}
+	id, err := account.NewID()
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	key, err := account.NewKey()
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := s.store.CreateAccount(id, account.HashKey(key)); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	// The key is shown once; the broker keeps only its hash.
+	_ = json.NewEncoder(w).Encode(map[string]any{"account": id, "api_key": key})
+}
+
+// authedAccount returns the account id if the request carries a valid Bearer API
+// key, or "" if none/invalid. The hash check is constant-time inside account.
+func (s *Server) authedAccount(r *http.Request) string {
+	if s.store == nil {
+		return ""
+	}
+	h := r.Header.Get("Authorization")
+	const p = "Bearer "
+	if !strings.HasPrefix(h, p) {
+		return ""
+	}
+	key := strings.TrimSpace(h[len(p):])
+	if !account.LooksLikeKey(key) {
+		return ""
+	}
+	id := r.Header.Get("X-Doublethink-Account")
+	if id == "" {
+		return ""
+	}
+	stored, err := s.store.AccountKeyHash(id)
+	if err != nil {
+		return ""
+	}
+	if !account.VerifyKey(key, stored) {
+		return ""
+	}
+	return id
+}
 
 // --- self-service private-channel creation ---
 
 type createChannelReq struct {
 	Channel string `json:"channel"`  // the channel id (client-chosen, ideally high-entropy)
 	AuthKey string `json:"auth_key"` // base32 K_auth, derived client-side from S
+	Retain  bool   `json:"retain"`   // request retention (requires an account)
+	TTLSec  int64  `json:"ttl_sec"`  // optional retention TTL override (capped)
 }
 
 // handleCreateChannel registers a private channel. The client sends the channel id
-// and K_auth (NOT the secret S, NOT the encryption key). No operator, no pairing
-// ceremony: one request and the channel exists, locked to holders of S.
+// and K_auth (NOT the secret S, NOT the encryption key). EPHEMERAL channels are
+// self-service and anonymous (rate-limited per IP). RETAINED channels require a
+// valid account API key and count against that account's quota.
 func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.createLim.Allow("chan:" + clientIP(r)) {
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
 		return
 	}
 	var req createChannelReq
@@ -91,24 +229,116 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad auth key", http.StatusBadRequest)
 		return
 	}
+
+	// Retained channels require the store AND an authenticated account. Anonymous
+	// retained channels are refused (they would be an unbounded-storage hole).
+	if req.Retain {
+		if s.store == nil {
+			http.Error(w, "retention not available on this instance", http.StatusNotImplemented)
+			return
+		}
+		owner := s.authedAccount(r)
+		if owner == "" {
+			http.Error(w, "retained channels require an account (POST /account, then Authorization: Bearer + X-Doublethink-Account)", http.StatusUnauthorized)
+			return
+		}
+		ttl := s.lim.RetentionTTL
+		if req.TTLSec > 0 {
+			ttl = time.Duration(req.TTLSec) * time.Second
+			if ttl > s.lim.RetentionTTLMax {
+				ttl = s.lim.RetentionTTLMax
+			}
+		}
+		ch := store.Channel{
+			ID: req.Channel, OwnerID: owner, KAuth: req.AuthKey, Retained: true,
+			TTLSeconds: int64(ttl.Seconds()), MaxBytes: s.lim.BytesPerChannel, MaxMsgs: int64(s.lim.RetainedMsgsPerChan),
+		}
+		if err := s.store.CreateChannel(ch, s.lim.ChannelsPerAccount); err != nil {
+			switch {
+			case errors.Is(err, store.ErrExists):
+				http.Error(w, "channel already exists", http.StatusConflict)
+			case errors.Is(err, store.ErrTooManyChan):
+				http.Error(w, "account channel limit reached", http.StatusTooManyRequests)
+			default:
+				http.Error(w, "internal error", http.StatusInternalServerError)
+			}
+			return
+		}
+		// Mirror into the in-memory auth registry for fast admission.
+		_ = s.reg.Register(req.Channel, authKey)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"channel": req.Channel, "created": true, "retained": true})
+		return
+	}
+
+	// Ephemeral channel: in-memory only, anonymous-friendly.
+	if s.store != nil {
+		if err := s.store.CreateChannel(store.Channel{ID: req.Channel, KAuth: req.AuthKey, Retained: false}, 1<<30); err != nil && !errors.Is(err, store.ErrExists) {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	}
 	if err := s.reg.Register(req.Channel, authKey); err != nil {
-		// Channel already exists: do not reveal it as a distinct, probeable state
-		// beyond the conflict status the creator needs.
 		http.Error(w, "channel already exists", http.StatusConflict)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"channel": req.Channel, "created": true})
+	_ = json.NewEncoder(w).Encode(map[string]any{"channel": req.Channel, "created": true, "retained": false})
+}
+
+// --- admin: raise limits for a preferred channel ---
+
+type adminLimitReq struct {
+	Channel  string `json:"channel"`
+	TTLSec   int64  `json:"ttl_sec"`   // -1 = leave unchanged
+	MaxBytes int64  `json:"max_bytes"` // -1 = leave unchanged
+	MaxMsgs  int64  `json:"max_msgs"`  // -1 = leave unchanged
+}
+
+// handleAdminLimit overrides a channel's retention limits. Requires the admin key.
+// Disabled (404) when no admin key is configured, so there is no admin surface
+// without an operator key.
+func (s *Server) handleAdminLimit(w http.ResponseWriter, r *http.Request) {
+	if !s.admin.Enabled() || s.store == nil {
+		http.NotFound(w, r) // do not advertise an admin surface that is not configured
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !s.admin.Verify(strings.TrimSpace(key)) {
+		http.Error(w, "not authorized", http.StatusUnauthorized)
+		return
+	}
+	var req adminLimitReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil || req.Channel == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.SetChannelLimits(req.Channel, req.TTLSec, req.MaxBytes, req.MaxMsgs); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "no such channel", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"channel": req.Channel, "updated": true})
 }
 
 // --- WebSocket: private channels ---
 
-// wsHandshake is the first frame a client sends: the channel it wants to attach to.
-// The broker replies with a random challenge; the client returns wsAuth with the
-// response only a holder of the channel secret can compute. Pub/sub begins only
-// after a successful verify.
+// wsHandshake is the first frame a client sends: the channel it wants to attach to,
+// and (for retained channels) the last seq it has already seen, so the broker can
+// replay only what it missed. The broker replies with a random challenge; the
+// client returns wsAuth with the response only a holder of the channel secret can
+// compute. Pub/sub begins only after a successful verify.
 type wsHandshake struct {
-	Channel string `json:"channel"`
+	Channel  string `json:"channel"`
+	AfterSeq int64  `json:"after_seq,omitempty"` // catch-up cursor; 0 = from the start
 }
 
 type wsChallenge struct {
@@ -125,6 +355,14 @@ type wsResult struct {
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
+	// Connection cap per IP (bounds concurrent WS connections from one source).
+	ip := clientIP(r)
+	if !s.conns.Acquire(ip) {
+		http.Error(w, "too many connections", http.StatusTooManyRequests)
+		return
+	}
+	defer s.conns.Release(ip)
+
 	c, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return // Accept already wrote an error
@@ -134,7 +372,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	channel, err := s.authenticateWS(ctx, c)
+	hs, err := s.authenticateWS(ctx, c)
 	if err != nil {
 		// Honest, uniform failure. We do not say whether the channel exists.
 		writeJSON(ctx, c, wsResult{OK: false, Error: "not authorized"})
@@ -145,52 +383,80 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.pumpWS(ctx, c, channel)
+	s.pumpWS(ctx, c, hs.Channel, hs.AfterSeq)
 }
 
-// authenticateWS runs the shared-secret challenge/response. Returns the authorized
-// channel on success, or a uniform error on any failure.
-func (s *Server) authenticateWS(ctx context.Context, c *websocket.Conn) (string, error) {
+// authenticateWS runs the shared-secret challenge/response. Returns the validated
+// handshake (channel + catch-up cursor) on success, or a uniform error on failure.
+func (s *Server) authenticateWS(ctx context.Context, c *websocket.Conn) (wsHandshake, error) {
 	hctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 
 	var hs wsHandshake
 	if err := readJSON(hctx, c, &hs); err != nil {
-		return "", err
+		return hs, err
 	}
 
 	challenge, err := auth.NewChallenge()
 	if err != nil {
-		return "", err
+		return hs, err
 	}
 	if err := writeJSON(hctx, c, wsChallenge{Challenge: base64.StdEncoding.EncodeToString(challenge)}); err != nil {
-		return "", err
+		return hs, err
 	}
 
 	var a wsAuth
 	if err := readJSON(hctx, c, &a); err != nil {
-		return "", err
+		return hs, err
 	}
 	response, err := base64.StdEncoding.DecodeString(a.Response)
 	if err != nil {
-		return "", auth.ErrUnauthorized
+		return hs, auth.ErrUnauthorized
 	}
 	if err := s.reg.Verify(hs.Channel, challenge, response); err != nil {
-		return "", err
+		return hs, err
 	}
-	return hs.Channel, nil
+	return hs, nil
 }
 
-// pumpWS runs the bidirectional loop once authenticated: it subscribes the peer to
-// the channel and forwards broker deliveries to the socket, while reading the
-// peer's published envelopes and fanning them out. Read and write run on separate
-// goroutines so a long inbound stream never blocks an outbound control delivery.
-func (s *Server) pumpWS(ctx context.Context, c *websocket.Conn, channel string) {
+// retained reports whether a channel is a retained channel in the store.
+func (s *Server) retained(channel string) bool {
+	if s.store == nil {
+		return false
+	}
+	ch, err := s.store.GetChannel(channel)
+	return err == nil && ch.Retained
+}
+
+// pumpWS runs the bidirectional loop once authenticated. For a retained channel it
+// first replays missed messages (seq > afterSeq) as catch-up, then streams live;
+// inbound publishes on a retained channel are persisted as they pass through. Read
+// and write run on separate goroutines so a long inbound stream never blocks an
+// outbound control delivery.
+func (s *Server) pumpWS(ctx context.Context, c *websocket.Conn, channel string, afterSeq int64) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	isRetained := s.retained(channel)
+
 	sub := s.broker.Subscribe(channel)
 	defer s.broker.Unsubscribe(sub)
+
+	// Catch-up: replay what this subscriber missed, in order, before live frames.
+	// Done before the live writer starts so ordering is catch-up-then-live.
+	if isRetained {
+		msgs, err := s.store.CatchUp(channel, afterSeq, maxCatchUp)
+		if err == nil {
+			for _, m := range msgs {
+				wctx, wcancel := context.WithTimeout(ctx, writeTimeout)
+				werr := c.Write(wctx, websocket.MessageText, m.Ciphertext)
+				wcancel()
+				if werr != nil {
+					return
+				}
+			}
+		}
+	}
 
 	// Writer: broker deliveries -> socket.
 	go func() {
@@ -240,6 +506,27 @@ func (s *Server) pumpWS(ctx context.Context, c *websocket.Conn, channel string) 
 		if e.Channel != channel {
 			s.sendError(ctx, c, "channel mismatch")
 			continue
+		}
+		// Enforce max message size and per-channel publish rate.
+		if s.lim.MaxMessageBytes > 0 && int64(len(data)) > s.lim.MaxMessageBytes {
+			s.sendError(ctx, c, "message too large")
+			continue
+		}
+		if !s.pubChan.Allow(channel) {
+			s.sendError(ctx, c, "rate limited")
+			continue
+		}
+		// Persist the FULL envelope bytes for a retained channel, so a reconnecting
+		// subscriber's catch-up replays the exact message (the broker stores opaque
+		// ciphertext: it never reads the payload). A quota rejection drops this
+		// message from retention but does not kill the live connection.
+		if isRetained {
+			if _, err := s.store.Append(channel, e.ID, string(e.Type), e.TS, data, s.lim.BytesPerAccount); err != nil {
+				if errors.Is(err, store.ErrQuotaAcct) || errors.Is(err, store.ErrQuotaChan) {
+					s.sendError(ctx, c, "storage quota exceeded")
+					// still deliver live below; just not retained
+				}
+			}
 		}
 		s.broker.Publish(e)
 	}

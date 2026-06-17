@@ -32,11 +32,14 @@ func usage() {
 
 Usage:
   doublethink serve [flags]            run the broker
+  doublethink account create [flags]   create an account; prints an API key (needed for retained channels)
   doublethink channel create [flags]   create a private channel; prints its shared secret
+  doublethink admin set-limit [flags]  (operator) raise a channel's retention limits
 
 To use a private channel, both parties connect to it with the shared secret. The
 secret is the gate: whoever holds it can join, and no one else can. Share it over a
-trusted channel; the broker never sees it.
+trusted channel; the broker never sees it. A retained channel (messages stored for
+an offline peer to catch up) requires an account API key and counts against quota.
 
 Run "doublethink <command> -h" for command flags.
 
@@ -53,8 +56,12 @@ func main() {
 	switch os.Args[1] {
 	case "serve":
 		err = runServe(os.Args[2:])
+	case "account":
+		err = runAccount(os.Args[2:])
 	case "channel":
 		err = runChannel(os.Args[2:])
+	case "admin":
+		err = runAdmin(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return

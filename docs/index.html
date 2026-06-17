@@ -171,6 +171,7 @@
     <tr><td>End-to-end encryption</td><td>The encryption key is derived from the shared secret (which the broker never sees), then split per direction and sealed with NaCl secretbox. The broker forwards ciphertext it cannot read.</td></tr>
     <tr><td>Self-service, no operator</td><td>Creating a private channel is one request that returns a secret. No admin, no pairing ceremony, no invite codes. The secret is the gate, share it like an ntfy topic, except it is unguessable and is what grants access.</td></tr>
     <tr><td>Streaming, full-duplex</td><td>Either party sends at any time; many messages stream over one channel; a barge-in control message is never stuck behind the other party's stream.</td></tr>
+    <tr><td>Optional retention</td><td>A channel is ephemeral (online-only) by default. Opt in to retention and the broker stores messages so a peer that was offline can catch up on reconnect. Stored messages stay end-to-end-encrypted ciphertext: kept, not read. Retained channels need an account and are bounded by quotas and a TTL.</td></tr>
   </table>
 
   <h2 id="run">Run it</h2>
@@ -201,6 +202,33 @@ doublethink channel create --prefix codespeak
   </p>
 <pre><code>curl -d "hello" http://localhost:8080/publish/mytopic
 curl -sN http://localhost:8080/subscribe/mytopic   # Server-Sent Events stream</code></pre>
+
+  <h2>Retained channels and accounts</h2>
+  <p>
+    The channel above is ephemeral: messages reach whoever is connected and are
+    then gone. For a peer that may be offline at publish time (a backgrounded app,
+    a reconnecting agent), create a retained channel so the broker stores its
+    messages for catch-up. Retained channels need an account:
+  </p>
+<pre><code># 1. Get an account API key (shown once; the broker stores only a hash of it):
+doublethink account create
+
+# 2. Create a retained channel with that key:
+doublethink channel create --prefix codespeak --retain \
+    --account &lt;id&gt; --api-key &lt;key&gt;</code></pre>
+  <p>
+    On reconnect a subscriber sends the last sequence number it saw and gets only
+    what it missed, in order, then resumes live. Stored messages are still
+    end-to-end-encrypted ciphertext the broker cannot read. A public instance bounds
+    use: retention is capped per channel (message count and byte size, oldest
+    evicted) and aged out by a TTL (default 24h, max 7d); each account has a storage
+    quota (256 MiB) and a channel cap (100); messages are size-capped (256 KiB); and
+    creation, publishing, and connections are rate-limited per source. An operator
+    can raise a preferred channel's limits with <code>doublethink admin set-limit</code>
+    (authenticated by the <code>DOUBLETHINK_ADMIN_KEY</code> the broker runs with);
+    the admin key controls limits and reads usage metadata only, it never grants
+    access to any channel's payloads.
+  </p>
 
   <h2>The honest limits</h2>
   <p>
