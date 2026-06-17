@@ -1,24 +1,48 @@
 # doublethink: M1 Design
 
-**Status: proposed (2026-06-17).** This is the architecture for doublethink's
+**Status: M1 implemented (2026-06-17).** This is the architecture for doublethink's
 first implementation milestone. It is downstream of [`../GOAL.md`](../GOAL.md),
 [`SECURITY.md`](SECURITY.md), [`CODESPEAK-REQUIREMENTS.md`](CODESPEAK-REQUIREMENTS.md),
-and the verified verdict in [`RESEARCH.md`](RESEARCH.md). One decision in here
-(committing to broker-blind E2E) is reserved for the user per SECURITY.md and is
-marked **PROPOSED** below; everything else follows from it.
+and the verified verdict in [`RESEARCH.md`](RESEARCH.md). The broker-blind E2E
+posture (decision 4) is now confirmed and recorded as decided in SECURITY.md.
 
-## M1 acceptance bar (fixed)
+## Deliberate deviation from CodeSpeak's mock contract (2026-06-17)
 
-A real doublethink that **replaces CodeSpeak's mock with zero CodeSpeak code
-change.** The envelope is fixed and transported with `payload` opaque:
+CodeSpeak built its mock against a bearer-token credential: `ChannelCredentials =
+{channel, role, token}`, where `token` is an opaque per-role secret the broker
+compares against a registered pairing. **doublethink deliberately does NOT adopt
+this.** It authenticates channel admission with an **Ed25519 challenge/response**
+instead (decision 4b): a reusable bearer token is a secret whose theft equals
+access, whereas public-key proof-of-possession over a fresh nonce is
+replay-resistant and sends no reusable secret. Current guidance points the same
+way (NIST 800-63B replay-resistance; RFC 9449 DPoP exists precisely to patch
+bearer-token replay). This is an architectural choice, not a preference.
+
+The original "replace the mock with zero CodeSpeak change" bar is therefore
+**intentionally relaxed**: the user has confirmed CodeSpeak will adopt the
+*published* doublethink and adapt its thin channel client to the keypair credential
+when it does. doublethink's job is to be the most secure, best-practice broker; the
+consumer adapts to it, not the reverse. The envelope itself is unchanged and still
+satisfies [`CODESPEAK-REQUIREMENTS.md`](CODESPEAK-REQUIREMENTS.md); only the
+credential mechanism deviates, and it deviates toward stronger security.
+
+`role` is retained as a recorded, requested-capability/audit label only. It is
+never trusted as proof of anything, and M1 enforces no per-role policy, so it is
+kept minimal and honest until a real per-role distinction exists.
+
+## M1 acceptance bar
+
+A real doublethink that someone can stand up and use for authenticated, private,
+end-to-end-encrypted, bidirectional, streaming channels, satisfying the
+*capabilities* in [`CODESPEAK-REQUIREMENTS.md`](CODESPEAK-REQUIREMENTS.md). The
+envelope is fixed and transported with `payload` opaque:
 
 ```json
 { "channel": "codespeak/<paired-id>", "type": "request|progress|result|summary|control|error",
   "id": "correlation-id", "payload": { }, "ts": "ISO-8601" }
 ```
 
-If M1 satisfies the contract in [`CODESPEAK-REQUIREMENTS.md`](CODESPEAK-REQUIREMENTS.md),
-it is done. Everything not needed for that bar is deferred (see the last section).
+Everything not needed for that bar is deferred (see the last section).
 
 ---
 

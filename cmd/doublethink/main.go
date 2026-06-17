@@ -32,8 +32,10 @@ func usage() {
 
 Usage:
   doublethink serve [flags]            run the broker
-  doublethink channel create [flags]   create a private channel
-  doublethink pair [flags]             join a private channel as a peer
+  doublethink channel create [flags]   create a private channel (enrols the first peer)
+  doublethink invite [flags]           mint a single-use code to add the second peer
+  doublethink pair [flags]             redeem an invite code; prints a SAS to verify
+  doublethink confirm [flags]          admit the second peer after the SAS matches
 
 Run "doublethink <command> -h" for command flags.
 
@@ -52,8 +54,12 @@ func main() {
 		err = runServe(os.Args[2:])
 	case "channel":
 		err = runChannel(os.Args[2:])
+	case "invite":
+		err = runInvite(os.Args[2:])
 	case "pair":
 		err = runPair(os.Args[2:])
+	case "confirm":
+		err = runConfirm(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return

@@ -1,20 +1,20 @@
 package main
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/base32"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"strings"
-	"time"
+
+	"github.com/ra-yavuz/doublethink/internal/clientcrypto"
 )
 
-// runChannel handles "doublethink channel create".
+// runChannel handles "doublethink channel create": mint a private channel and
+// enrol the creating (first) peer. The creator owns the channel from the start, so
+// it is admitted directly; the SECOND peer joins later via invite + SAS confirm.
 func runChannel(args []string) error {
 	if len(args) < 1 || args[0] != "create" {
 		return fmt.Errorf("usage: doublethink channel create [flags]")
@@ -22,13 +22,19 @@ func runChannel(args []string) error {
 	fs := flag.NewFlagSet("channel create", flag.ContinueOnError)
 	adminURL := fs.String("admin", "http://127.0.0.1:8081", "admin API base URL of a running server")
 	prefix := fs.String("prefix", "", "optional human prefix for the channel id (e.g. codespeak)")
+	identityPath := fs.String("identity", "", "path to write the creating peer's identity file (required)")
+	role := fs.String("role", "agent", "this peer's role label (e.g. agent, pwa)")
 	quiet := fs.Bool("quiet", false, "print only the channel id (for scripting)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: doublethink channel create [flags]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: doublethink channel create --identity <file> [flags]\n\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
+	}
+	if *identityPath == "" {
+		fs.Usage()
+		return fmt.Errorf("--identity is required (the creator's private keys are stored there)")
 	}
 
 	// A high-entropy random channel id so the name is unguessable. The id is not
@@ -39,23 +45,30 @@ func runChannel(args []string) error {
 		return err
 	}
 
-	body, _ := json.Marshal(map[string]string{"channel": id})
-	resp, err := http.Post(strings.TrimRight(*adminURL, "/")+"/admin/channel/create", "application/json", bytes.NewReader(body))
+	creator, err := clientcrypto.GenerateIdentity()
 	if err != nil {
-		return fmt.Errorf("contacting admin API at %s: %w (is the server running?)", *adminURL, err)
+		return fmt.Errorf("generating identity: %w", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("create failed: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+	ecdh := creator.ECDHPublic()
+	req := map[string]string{
+		"channel":  id,
+		"id_pub":   b64(creator.SignPub),
+		"ecdh_pub": b64(ecdh[:]),
+	}
+	if err := adminPost(*adminURL, "/admin/channel/create", req, nil); err != nil {
+		return fmt.Errorf("creating channel: %w", err)
+	}
+	if err := saveIdentity(*identityPath, peerIdentityFile{Channel: id, Role: *role, Identity: creator.Export()}); err != nil {
+		return fmt.Errorf("writing identity file: %w", err)
 	}
 
 	if *quiet {
 		fmt.Println(id)
 		return nil
 	}
-	fmt.Printf("created private channel:\n  %s\n\n", id)
-	fmt.Printf("pair each peer with:\n  doublethink pair --channel %s --identity <peer>.json\n", id)
+	fmt.Printf("created private channel and enrolled this peer (role %q):\n  %s\n\n", *role, id)
+	fmt.Printf("identity saved to %s (keep private; never sent to the broker)\n\n", *identityPath)
+	fmt.Printf("invite the second peer with:\n  doublethink invite --channel %s --identity %s\n", id, *identityPath)
 	return nil
 }
 
@@ -69,24 +82,4 @@ func randomChannelID(prefix string) (string, error) {
 		return prefix + "/" + enc, nil
 	}
 	return enc, nil
-}
-
-// httpJSON is a small helper for POSTing JSON to the admin API and decoding the
-// JSON response. Shared by pair.
-func httpJSON(url string, reqBody any, out any) error {
-	b, _ := json.Marshal(reqBody)
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Post(url, "application/json", bytes.NewReader(b))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(msg)))
-	}
-	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
-	}
-	return nil
 }

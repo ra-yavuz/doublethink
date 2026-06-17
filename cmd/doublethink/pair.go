@@ -1,89 +1,67 @@
 package main
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/ra-yavuz/doublethink/internal/clientcrypto"
 )
 
-// peerIdentityFile is what a peer stores locally: its PRIVATE identity plus the
-// channel it is paired on. This file must stay on the peer's own machine; it is
-// never sent to the broker.
-type peerIdentityFile struct {
-	Channel  string                          `json:"channel"`
-	Identity clientcrypto.PersistedIdentity  `json:"identity"`
-}
-
-// runPair handles "doublethink pair": generate this peer's identity, register its
-// public keys with the running server, learn the other peer's X25519 key, and
-// save the identity locally. Running pair again on a channel rotates this peer's
-// keys (the M1 re-pair revocation path).
+// runPair handles "doublethink pair": the second peer redeems a pairing code,
+// generates its identity, and learns the SAS it must compare with the inviter out
+// of band. Its key is NOT yet admitted to the channel: that happens at confirm,
+// after a human verifies the SAS matches on both devices. This is the
+// MITM-resistant step.
 func runPair(args []string) error {
 	fs := flag.NewFlagSet("pair", flag.ContinueOnError)
-	channel := fs.String("channel", "", "the private channel id to join (from 'channel create')")
+	channel := fs.String("channel", "", "the private channel id to join (required)")
+	code := fs.String("code", "", "the single-use pairing code from 'invite' (required)")
 	identityPath := fs.String("identity", "", "path to write this peer's identity file (required)")
+	role := fs.String("role", "pwa", "this peer's role label (e.g. pwa, agent)")
 	adminURL := fs.String("admin", "http://127.0.0.1:8081", "admin API base URL of a running server")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: doublethink pair --channel <id> --identity <file> [flags]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: doublethink pair --channel <id> --code <code> --identity <file> [flags]\n\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *channel == "" || *identityPath == "" {
+	if *channel == "" || *code == "" || *identityPath == "" {
 		fs.Usage()
-		return fmt.Errorf("--channel and --identity are required")
+		return fmt.Errorf("--channel, --code, and --identity are required")
 	}
 
 	id, err := clientcrypto.GenerateIdentity()
 	if err != nil {
 		return fmt.Errorf("generating identity: %w", err)
 	}
-
-	ecdhPub := id.ECDHPublic()
+	ecdh := id.ECDHPublic()
 	req := map[string]string{
-		"channel":  *channel,
-		"id_pub":   base64.StdEncoding.EncodeToString(id.SignPub),
-		"ecdh_pub": base64.StdEncoding.EncodeToString(ecdhPub[:]),
+		"code":     *code,
+		"id_pub":   b64(id.SignPub),
+		"ecdh_pub": b64(ecdh[:]),
 	}
 	var resp struct {
-		Channel string            `json:"channel"`
-		Peers   map[string]string `json:"peers"`
+		Channel     string `json:"channel"`
+		SAS         string `json:"sas"`
+		InviterECDH string `json:"inviter_ecdh"`
 	}
-	url := strings.TrimRight(*adminURL, "/") + "/admin/pair"
-	if err := httpJSON(url, req, &resp); err != nil {
-		return fmt.Errorf("pairing against %s: %w (did you run 'channel create' first?)", *adminURL, err)
+	if err := adminPost(*adminURL, "/admin/redeem", req, &resp); err != nil {
+		return fmt.Errorf("redeeming pairing code: %w", err)
 	}
 
 	// Save this peer's private identity locally.
-	pf := peerIdentityFile{Channel: *channel, Identity: id.Export()}
-	out, _ := json.MarshalIndent(pf, "", "  ")
-	if err := os.WriteFile(*identityPath, out, 0o600); err != nil {
+	pf := peerIdentityFile{Channel: resp.Channel, Role: *role, Identity: id.Export()}
+	if err := saveIdentity(*identityPath, pf); err != nil {
 		return fmt.Errorf("writing identity file: %w", err)
 	}
 
-	fmt.Printf("paired on channel %s\n", *channel)
-	fmt.Printf("identity saved to %s (keep this private; it is never sent to the broker)\n", *identityPath)
-
-	// Report how many peers are paired so far. Two means the channel is ready for
-	// end-to-end traffic; one means we are waiting for the other peer to pair.
-	mine := base64.StdEncoding.EncodeToString(id.SignPub)
-	others := 0
-	for k := range resp.Peers {
-		if k != mine {
-			others++
-		}
-	}
-	switch others {
-	case 0:
-		fmt.Printf("waiting for the other peer to pair. Run pair on the second device with the same --channel.\n")
-	default:
-		fmt.Printf("%d other peer(s) paired; this channel is ready for end-to-end messages.\n", others)
-	}
+	fmt.Printf("redeemed pairing code for channel %s\n", resp.Channel)
+	fmt.Printf("identity saved to %s (keep private; never sent to the broker)\n\n", *identityPath)
+	fmt.Printf("SAS (compare with the other device OUT OF BAND):\n\n    %s\n\n", resp.SAS)
+	fmt.Printf("if and only if both devices show the SAME SAS, run on the INVITING device:\n")
+	fmt.Printf("  doublethink confirm --sas %s\n\n", resp.SAS)
+	fmt.Printf("until confirmed, this peer cannot attach to the channel.\n")
 	return nil
 }
