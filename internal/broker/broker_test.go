@@ -85,41 +85,28 @@ func TestStreamingIncrementalInOrder(t *testing.T) {
 // fanned out to a healthy subscriber promptly. This is the property that lets a
 // barge-in control reach a peer while a different, stalled peer is mid-stream.
 //
-// Written deterministically: the slow subscriber is filled to exactly capacity
-// first (no scheduling race), then we assert Publish of the control returns
-// without blocking and the healthy subscriber receives it. Correctness does not
-// depend on goroutine timing.
+// Written deterministically with NO scheduling dependence: the stalled
+// subscriber is filled to exactly capacity, THEN a healthy subscriber joins (so
+// it never receives the stalled peer's backlog), then we assert Publish of the
+// control both returns promptly (does not block on the full subscriber) and
+// reaches the healthy subscriber. The healthy subscriber's own queue holds only
+// the single control message, so it cannot overflow.
 func TestControlNotBlockedByFullSubscriber(t *testing.T) {
 	b := New()
 	stalled := b.Subscribe("room") // never drains; we fill it to capacity
-	healthy := b.Subscribe("room") // drains; must still get the control
-
-	// Drain `healthy` continuously so it never overflows.
-	healthyGot := make(chan *envelope.Envelope, 1)
-	go func() {
-		for {
-			select {
-			case e := <-healthy.C:
-				if e.Type == envelope.TypeControl {
-					select {
-					case healthyGot <- e:
-					default:
-					}
-				}
-			case <-healthy.Closed:
-				return
-			}
-		}
-	}()
 
 	// Fill the stalled subscriber to exactly its queue capacity. After this its
-	// buffered channel is full; the next publish to it would overflow.
+	// buffered channel is full; the next publish to it would overflow and drop it.
 	for i := 0; i < subscriberQueueDepth; i++ {
 		b.Publish(env("room", envelope.TypeProgress, fmt.Sprintf("p%d", i)))
 	}
 
+	// A healthy peer joins now, so it never saw the backlog above. Its queue is
+	// empty and will hold just the control message; it cannot overflow.
+	healthy := b.Subscribe("room")
+
 	// Publishing the control must return promptly (non-blocking per subscriber),
-	// even though `stalled` is full. We time the call to prove it does not block.
+	// even though `stalled` is full. Time the call to prove it does not block.
 	done := make(chan int, 1)
 	go func() { done <- b.Publish(env("room", envelope.TypeControl, "barge-in")) }()
 	select {
@@ -131,10 +118,12 @@ func TestControlNotBlockedByFullSubscriber(t *testing.T) {
 
 	// And the healthy subscriber actually received the control.
 	select {
-	case e := <-healthyGot:
-		if e.ID != "barge-in" {
-			t.Errorf("healthy subscriber got control %q, want barge-in", e.ID)
+	case e := <-healthy.C:
+		if e.Type != envelope.TypeControl || e.ID != "barge-in" {
+			t.Errorf("healthy subscriber got %s/%q, want control/barge-in", e.Type, e.ID)
 		}
+	case <-healthy.Closed:
+		t.Fatal("healthy subscriber was dropped; it had an empty queue and should not be")
 	case <-time.After(time.Second):
 		t.Fatal("control did not reach the healthy subscriber")
 	}
