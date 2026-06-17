@@ -27,3 +27,6 @@ state.json
 /doublethink
 *.test
 *.out
+
+# deploy-only, not committed (push script, stack, nginx)
+portainer/
