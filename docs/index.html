@@ -96,6 +96,19 @@
     padding: 12px 16px; border-radius: 4px;
     font-size: 0.9rem; margin: 12px 0 0;
   }
+  .demo { border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; background: var(--apt-bg); }
+  .demo-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .demo-input { flex: 1 1 280px; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--card); color: var(--fg); font-size: 0.92rem; font-family: inherit; }
+  .demo-btn { padding: 8px 16px; border: 1px solid var(--link); border-radius: 5px; background: var(--link); color: #fff; font-size: 0.92rem; cursor: pointer; }
+  .demo-btn:disabled { opacity: 0.55; cursor: default; }
+  .demo-out { margin-top: 14px; font-size: 0.86rem; }
+  .demo-step { margin: 10px 0; }
+  .demo-label { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 3px; }
+  .demo-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; word-break: break-all; background: var(--code-bg); padding: 6px 8px; border-radius: 4px; display: block; }
+  .demo-ok { color: #1a7f37; font-weight: 600; }
+  .demo-bad { color: #b91c1c; font-weight: 600; }
+  @media (prefers-color-scheme: dark) { .demo-ok { color: #4ac26b; } .demo-bad { color: #f1707b; } }
+  .demo-note { color: var(--muted); font-size: 0.8rem; margin-top: 12px; }
   table.matrix { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
   table.matrix th, table.matrix td {
     text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line);
@@ -174,6 +187,27 @@
     <tr><td>Streaming, full-duplex</td><td>Either party sends at any time; many messages stream over one channel; a barge-in control message is never stuck behind the other party's stream.</td></tr>
     <tr><td>Optional retention</td><td>A channel is ephemeral (online-only) by default. Opt in to retention and the broker stores messages so a peer that was offline can catch up on reconnect. Stored messages stay end-to-end-encrypted ciphertext: kept, not read. Retained channels need an account and are bounded by quotas and a TTL.</td></tr>
   </table>
+
+  <h2>See it, do not take my word for it</h2>
+  <p>
+    This runs against the live broker at <code>api.caleidoscode.io</code>, entirely in
+    your browser. It generates a fresh secret here (nothing is embedded), creates a
+    throwaway ephemeral channel, then has two parties exchange one message. You see
+    the <strong>exact bytes the broker relays</strong> next to the plaintext only a
+    holder of the secret can recover. Then it tries to read the same bytes with the
+    <strong>wrong</strong> secret, and fails. Nothing here persists.
+  </p>
+  <div id="demo" class="demo">
+    <div class="demo-row">
+      <input id="demo-msg" class="demo-input" type="text" maxlength="200"
+             value="meet me at the usual place, 6pm" aria-label="message to send">
+      <button id="demo-run" class="demo-btn" type="button">Run the demo</button>
+    </div>
+    <div id="demo-out" class="demo-out" hidden></div>
+    <p class="demo-note">The demo uses an ephemeral (non-retained) channel and tears
+      down immediately, so it stores nothing and ages out at once. Rate-limited like
+      any other client.</p>
+  </div>
 
   <h2 id="run">Run it</h2>
   <p>Cross-platform: Docker or a single native binary. Pick one.</p>
@@ -270,5 +304,7 @@ doublethink channel create --prefix codespeak --retain \
     </p>
   </footer>
 </main>
+<script src="nacl-fast.min.js"></script>
+<script type="module" src="demo.js"></script>
 </body>
 </html>
