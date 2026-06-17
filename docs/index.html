@@ -6,7 +6,7 @@
 <title>doublethink: ntfy-easy pub/sub with genuinely private, end-to-end-encrypted channels</title>
 <meta name="description" content="doublethink is a small open-source, self-hosted publish/subscribe message broker by Ramazan Yavuz. As easy to stand up as ntfy, but with real authentication and genuinely private channels: private-channel payloads are end-to-end encrypted so the broker operator never sees plaintext. Runs in Docker or as a single native binary. Opt-in plaintext public topics too.">
 <meta name="author" content="Ramazan Yavuz">
-<meta name="keywords" content="doublethink, ntfy alternative, private pub/sub, end-to-end encrypted broker, self-hosted message broker, authenticated channels, ntfy with auth, websocket broker, secure pubsub, broker-blind encryption, ed25519 challenge, x25519 secretbox">
+<meta name="keywords" content="doublethink, ntfy alternative, private pub/sub, end-to-end encrypted broker, self-hosted message broker, authenticated channels, ntfy with auth, websocket broker, secure pubsub, broker-blind encryption, shared secret channel, nacl secretbox">
 <meta name="robots" content="index,follow">
 <link rel="canonical" href="https://ra-yavuz.github.io/doublethink/">
 <meta property="og:type" content="website">
@@ -166,11 +166,11 @@
   <h2>What makes it private</h2>
   <table class="matrix">
     <tr><th>Property</th><th>How</th></tr>
-    <tr><td>Authentication</td><td>Each party holds an Ed25519 device key; it attaches by signing a fresh server challenge. No reusable bearer token. Unauthenticated access is rejected outright.</td></tr>
-    <tr><td>Per-channel authorisation</td><td>A key authorised for one channel reaches nothing else. Knowing a channel name grants no access; the broker leaks nothing about whether a private channel exists.</td></tr>
-    <tr><td>End-to-end encryption</td><td>Paired peers derive a shared key by X25519 ECDH (bound to both their keys); payloads are sealed per direction with NaCl secretbox. The broker forwards ciphertext it cannot read.</td></tr>
-    <tr><td>MITM-resistant pairing</td><td>Single-use, short-lived invite codes plus a short authentication string (SAS) both sides compare out of band before a peer is admitted. A substituted key changes the SAS.</td></tr>
-    <tr><td>Streaming, full-duplex</td><td>Either peer sends at any time; many messages stream over one channel; a barge-in control message is never stuck behind a peer's stream.</td></tr>
+    <tr><td>Authentication</td><td>A channel is gated by one high-entropy shared secret the two parties hold. A client attaches by answering a fresh server challenge with a response only a holder of the secret can compute. The secret itself is never sent to the broker. Access without it is rejected outright.</td></tr>
+    <tr><td>Per-channel authorisation</td><td>Holding one channel's secret reaches nothing else. Knowing a channel name grants no access; the broker leaks nothing about whether a private channel exists.</td></tr>
+    <tr><td>End-to-end encryption</td><td>The encryption key is derived from the shared secret (which the broker never sees), then split per direction and sealed with NaCl secretbox. The broker forwards ciphertext it cannot read.</td></tr>
+    <tr><td>Self-service, no operator</td><td>Creating a private channel is one request that returns a secret. No admin, no pairing ceremony, no invite codes. The secret is the gate, share it like an ntfy topic, except it is unguessable and is what grants access.</td></tr>
+    <tr><td>Streaming, full-duplex</td><td>Either party sends at any time; many messages stream over one channel; a barge-in control message is never stuck behind the other party's stream.</td></tr>
   </table>
 
   <h2 id="run">Run it</h2>
@@ -184,27 +184,20 @@ docker compose -f docker-compose.build.yml up --build
 # Or a single native binary:
 go build -o doublethink ./cmd/doublethink
 ./doublethink serve</code></pre>
+  <p>The broker listens on <code>:8080</code>.</p>
+
+  <h2>Create a private channel</h2>
+<pre><code># One request, no operator. Prints the channel id and its shared secret:
+doublethink channel create --prefix codespeak
+#   channel: codespeak/&lt;random-id&gt;
+#   secret:  &lt;high-entropy shared secret&gt;</code></pre>
   <p>
-    Channels listen on <code>:8080</code>. The admin/pairing API binds to
-    <code>127.0.0.1:8081</code> (loopback only; never expose it off-host).
-  </p>
-
-  <h2>Create a private channel and pair two peers</h2>
-<pre><code># Peer A creates the channel (and is enrolled):
-doublethink channel create --prefix codespeak --identity agent.json
-
-# Peer A mints a single-use invite for peer B:
-doublethink invite --identity agent.json
-
-# Peer B redeems it; this prints a SAS but does NOT yet admit peer B:
-doublethink pair --channel &lt;id&gt; --code &lt;code&gt; --identity pwa.json
-
-# Compare the SAS shown on both sides. If they match, admit peer B:
-doublethink confirm --sas &lt;sas&gt;</code></pre>
-  <p>
-    Each peer keeps its own private identity locally; the broker stores only
-    public keys and never the channel key. Plaintext public topics work
-    ntfy-style:
+    Share the secret with the other party over a trusted channel. Both parties then
+    connect to the channel with that secret; whoever holds it can join and read the
+    channel, and no one else can. The broker stores only a key derived from the
+    secret (enough to check who may join, not enough to read messages), so the
+    operator never sees your traffic. Plaintext public topics work ntfy-style, no
+    secret, fully open:
   </p>
 <pre><code>curl -d "hello" http://localhost:8080/publish/mytopic
 curl -sN http://localhost:8080/subscribe/mytopic   # Server-Sent Events stream</code></pre>
@@ -213,10 +206,12 @@ curl -sN http://localhost:8080/subscribe/mytopic   # Server-Sent Events stream</
   <p>
     The broker is <strong>payload-blind, not metadata-blind</strong>: it routes on
     the channel id and the message type, id, and timestamp, and it sees ciphertext
-    sizes and timing. This release uses a static channel key per pairing, so it
-    does not yet provide forward secrecy, and it offers at-most-once online
-    delivery with no retention for a peer that was offline. These are deliberate,
-    documented scope limits, not accidents; see the
+    sizes and timing. The channel key is static for the life of the shared secret,
+    so this release does not yet provide forward secrecy; the model is also
+    symmetric (both holders of the secret can encrypt and read, so there is no
+    per-sender proof and no way to evict one party without rotating the secret), and
+    it offers at-most-once online delivery with no retention for a party that was
+    offline. These are deliberate, documented scope limits, not accidents; see the
     <a href="https://github.com/ra-yavuz/doublethink/blob/main/docs/SECURITY.md">security doc</a>
     and <a href="https://github.com/ra-yavuz/doublethink/blob/main/docs/DESIGN-M1.md">design</a>.
   </p>

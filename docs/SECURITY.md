@@ -48,16 +48,24 @@ copying a snippet:
   survey ([`RESEARCH.md`](RESEARCH.md)) showed that a TLS-in-transit-only broker
   has no differentiation (NATS, EMQX, and RabbitMQ already do that, better), so
   broker-blind confidentiality is doublethink's reason to exist. The mechanism is
-  in [`DESIGN-M1.md`](DESIGN-M1.md) decision 4 (X25519 ECDH, HKDF bound to both
-  peers' keys, per-direction secretbox). Honest scope of the guarantee: the broker
-  is **payload-blind**, not metadata-blind. It still sees the channel id and the
-  envelope's `type`, `id`, and `ts` (it routes on these) plus ciphertext sizes and
-  timing. M1 uses a static channel key, so there is no forward secrecy yet; that
-  is a documented limitation and a named follow-up, not a silent gap.
-- **Authentication and key exchange mechanism.** How a party proves identity and
-  how channel keys are established. Must interoperate with CodeSpeak's Device ID
-  / Session Token / public-private key-pair pairing (see
-  [`CODESPEAK-REQUIREMENTS.md`](CODESPEAK-REQUIREMENTS.md)).
+  in [`DESIGN-M1.md`](DESIGN-M1.md): the encryption key is derived from a shared
+  channel secret S (`K_enc = HKDF(S, ...)`, then per-direction secretbox keys); S
+  is never sent to the broker, so the broker cannot derive `K_enc`. Honest scope of
+  the guarantee: the broker is **payload-blind**, not metadata-blind. It still sees
+  the channel id and the envelope's `type`, `id`, and `ts` (it routes on these)
+  plus ciphertext sizes and timing. The channel key is static for the life of the
+  secret, so there is no forward secrecy yet; that is a documented limitation and a
+  named follow-up, not a silent gap.
+- **Authentication mechanism. DECIDED: shared-secret challenge-response.** A
+  private channel is gated by one high-entropy shared secret S that the parties
+  hold. The broker stores `K_auth = HKDF(S, "auth")` (a different HKDF label than
+  the encryption key) and admits a client by a challenge-response proving
+  possession of `K_auth`; S itself is never sent. This is self-service and
+  ntfy-easy: creating a channel is a single request, no operator and no pairing
+  ceremony. A consumer with its own device/session/key pairing (such as CodeSpeak)
+  layers that on top of, or maps it to, the channel secret; doublethink does not
+  require it. (An earlier admin-gated keypair + SAS design was dropped as
+  over-engineered, see DESIGN-M1.md.)
 - **Channel namespacing and access mapping.** How channel names map to authorised
   parties, and how name guessing or enumeration is prevented for private
   channels.

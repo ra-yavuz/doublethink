@@ -9,9 +9,10 @@ channels you can trust with real traffic.
 
 > **Status: M1 working, pre-release.** The prior-art research is done
 > ([`docs/RESEARCH.md`](docs/RESEARCH.md)) and the first milestone is implemented
-> and tested: a runnable broker you can stand up, create a private channel on,
-> pair two authenticated peers, and exchange end-to-end-encrypted streamed
-> messages the broker cannot read, plus opt-in plaintext topics. The design is in
+> and tested: a runnable broker you can stand up, create a private channel on with
+> one request, and have two parties who share its secret exchange
+> end-to-end-encrypted streamed messages the broker cannot read, plus opt-in
+> plaintext topics. The design is in
 > [`docs/DESIGN-M1.md`](docs/DESIGN-M1.md). It is cross-platform: run it in Docker
 > or as a single native binary. No hosted offering yet. Start with
 > [`GOAL.md`](GOAL.md) for the canonical endgoal.
@@ -32,31 +33,26 @@ go build -o doublethink ./cmd/doublethink
 ./doublethink serve
 ```
 
-The broker listens on `:8080` (channels) with the admin/pairing API on
-`127.0.0.1:8081` (loopback only; never expose it off-host).
+The broker listens on `:8080`.
 
-Create a private channel and pair two peers. Pairing is man-in-the-middle
-resistant: a single-use invite code, then a short authentication string (SAS) both
-sides compare out of band before the second peer is admitted.
+Create a private channel. This is self-service, one request, no operator:
 
 ```
-# Peer A creates the channel (and is enrolled):
-./doublethink channel create --prefix codespeak --identity agent.json
-
-# Peer A mints a single-use invite for peer B:
-./doublethink invite --identity agent.json
-
-# Peer B redeems it; this prints a SAS but does NOT yet admit peer B:
-./doublethink pair --channel <id> --code <code> --identity pwa.json
-
-# Compare the SAS shown on both sides. If they match, admit peer B:
-./doublethink confirm --sas <sas>
+./doublethink channel create --prefix codespeak
+#   channel: codespeak/<random-id>
+#   secret:  <high-entropy shared secret>
 ```
 
-Each peer holds its own private identity locally; the server stores only public
-keys and never sees a private-channel payload in plaintext (the payload is
-end-to-end encrypted between the paired peers). Plaintext public topics work
-ntfy-style for those who want them:
+The **secret is the gate.** Share it with the other party over a trusted channel
+(it is like an ntfy topic, except the secret, not the name, is what grants access,
+and it is unguessable). Both parties then connect to the channel using that secret;
+anyone who holds it can join, and no one else can. The broker **never sees the
+secret**: it stores only a derived authentication key, so it can check who may join
+but cannot read your messages. Messages are end-to-end encrypted between the two
+parties who hold the secret.
+
+Plaintext public topics work ntfy-style for those who want them, no secret, fully
+open:
 
 ```
 curl -d "hello" http://localhost:8080/publish/mytopic
