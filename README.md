@@ -7,16 +7,12 @@ effectively public. doublethink keeps the minutes-to-set-up ergonomics and adds
 the thing ntfy deliberately omits: identity, authentication, and private
 channels you can trust with real traffic.
 
-> **Status: M2 working.** Prior-art research is done
-> ([`docs/RESEARCH.md`](docs/RESEARCH.md)). M1 gives a runnable broker you can
-> stand up and create a private channel on with one request, so two parties who
-> share its secret exchange end-to-end-encrypted streamed messages the broker
-> cannot read ([`docs/DESIGN-M1.md`](docs/DESIGN-M1.md)). M2 adds the pieces a
-> public instance needs: accounts, opt-in message retention (so an offline peer
-> can catch up), TTL aging, per-account and per-channel quotas, and abuse controls
-> ([`docs/DESIGN-M2.md`](docs/DESIGN-M2.md)). It is cross-platform: run it in
-> Docker or as a single native binary. Start with [`GOAL.md`](GOAL.md) for the
-> canonical endgoal.
+Create a private channel with one request and you get back a high-entropy secret.
+Whoever holds the secret can join the channel; nobody else can. Messages are
+end-to-end encrypted between the parties who share it, so the broker relays them
+but cannot read them. Opt-in message retention lets a peer that was offline catch
+up on reconnect. Plaintext public topics are available too, ntfy-style. It is
+cross-platform: run it in Docker or as a single native binary.
 
 ## Quickstart
 
@@ -61,8 +57,8 @@ curl -sN http://localhost:8080/subscribe/mytopic   # Server-Sent Events stream
 ```
 
 The public path refuses any name registered as a private channel, so a private
-channel can never be reached through the open path. See
-[`docs/DESIGN-M1.md`](docs/DESIGN-M1.md) for the crypto and threat model.
+channel can never be reached through the open path. The security model is in
+[`docs/SECURITY.md`](docs/SECURITY.md).
 
 ### Retained channels (catch up after being offline)
 
@@ -101,8 +97,7 @@ Messages are size-capped (256 KiB), and channel creation, publishing, and
 connections are rate-limited per source. An operator can raise the limits for a
 preferred channel with `doublethink admin set-limit` (authenticated by the
 `DOUBLETHINK_ADMIN_KEY` the broker runs with); the admin key controls limits and
-reads usage metadata only, it never grants access to any channel's payloads. The
-full set of defaults is in [`docs/DESIGN-M2.md`](docs/DESIGN-M2.md).
+reads usage metadata only, it never grants access to any channel's payloads.
 
 **What retention costs you to know:** stored messages are user data. They expire,
 can be evicted to stay within caps, and count against quota. End-to-end encryption
@@ -122,32 +117,13 @@ footing with ease of use, never traded against it:
   access is rejected.
 - Private-channel contents are confidential to the authorised parties; other
   parties on the broker cannot read or write them.
-- Whether the broker operator can ever see plaintext, or whether payloads are
-  end-to-end encrypted between peers, is a core design decision being made
-  deliberately (see [`GOAL.md`](GOAL.md) open questions), not defaulted away.
+- Private-channel payloads are end-to-end encrypted between the parties who hold
+  the channel secret. The broker derives, from that secret, only a key that lets
+  it check who may join; it never holds the encryption key and cannot read your
+  messages.
 
-The full security expectations are in [`docs/SECURITY.md`](docs/SECURITY.md).
-
-## Why it exists right now: CodeSpeak
-
-The immediate driver is [CodeSpeak](https://github.com/ra-yavuz/codespeak), a
-voice-first coding companion whose PWA and local agent must talk over a secure,
-private, bidirectional, streaming channel, more than ntfy can safely provide.
-doublethink's first job is to satisfy CodeSpeak's contract, mirrored here in
-[`docs/CODESPEAK-REQUIREMENTS.md`](docs/CODESPEAK-REQUIREMENTS.md). CodeSpeak is
-being built first against a **mock** of doublethink that implements that
-contract; doublethink is built in parallel and swapped in when ready. CodeSpeak
-is the first consumer, not the only intended one: doublethink is meant to be
-generally useful to anyone who wants ntfy's ease with real privacy.
-
-## Documents
-
-| Document | What it pins down |
-|---|---|
-| [`GOAL.md`](GOAL.md) | The canonical endgoal of doublethink. |
-| [`docs/SECURITY.md`](docs/SECURITY.md) | The security expectations and threat model. |
-| [`docs/CODESPEAK-REQUIREMENTS.md`](docs/CODESPEAK-REQUIREMENTS.md) | The minimum CodeSpeak needs from doublethink, and the message envelope it assumes. |
-| [`docs/RESEARCH.md`](docs/RESEARCH.md) | The open question of whether an existing tool already fills this exact gap. |
+The full security model, threat model, and honest limits are in
+[`docs/SECURITY.md`](docs/SECURITY.md).
 
 ## Disclaimer / no warranty
 

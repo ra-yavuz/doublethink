@@ -3,10 +3,8 @@
 Security is doublethink's reason to exist. ntfy is easy but its topics are
 effectively public; doublethink's whole value is being ntfy-easy **and**
 trustworthy with private traffic. This document states the security posture the
-project commits to. It defines requirements and a threat model; it does not pick
-the cryptographic mechanism, that is a design-phase decision (see
-[`../GOAL.md`](../GOAL.md) open questions) to be made deliberately and, given the
-stakes, cross-checked rather than guessed.
+project commits to: its requirements, the mechanism it uses, and its honest
+limits.
 
 Security here is a primary goal, held on equal footing with ease of use. Where
 the two appear to conflict, the resolution is a design problem to solve, not a
@@ -36,54 +34,38 @@ licence to weaken security for convenience.
    authenticated, confidential private channels, not a wide-open broker they are
    expected to lock down later.
 
-## Decisions that must be made on purpose (not defaulted)
+## How the security works
 
-These are the load-bearing security decisions. Each must be chosen deliberately
-in the design phase and documented; none may be settled by accident or by
-copying a snippet:
+The load-bearing mechanisms behind the requirements above:
 
-- **End-to-end vs in-transit. DECIDED (2026-06-17): end-to-end.** Private-channel
-  payloads are end-to-end encrypted between the authorised peers; the broker never
-  sees plaintext. This was settled deliberately, not defaulted: the prior-art
-  survey ([`RESEARCH.md`](RESEARCH.md)) showed that a TLS-in-transit-only broker
-  has no differentiation (NATS, EMQX, and RabbitMQ already do that, better), so
-  broker-blind confidentiality is doublethink's reason to exist. The mechanism is
-  in [`DESIGN-M1.md`](DESIGN-M1.md): the encryption key is derived from a shared
-  channel secret S (`K_enc = HKDF(S, ...)`, then per-direction secretbox keys); S
-  is never sent to the broker, so the broker cannot derive `K_enc`. Honest scope of
-  the guarantee: the broker is **payload-blind**, not metadata-blind. It still sees
-  the channel id and the envelope's `type`, `id`, and `ts` (it routes on these)
-  plus ciphertext sizes and timing. The channel key is static for the life of the
-  secret, so there is no forward secrecy yet; that is a documented limitation and a
-  named follow-up, not a silent gap.
-- **Authentication mechanism. DECIDED: shared-secret challenge-response.** A
-  private channel is gated by one high-entropy shared secret S that the parties
-  hold. The broker stores `K_auth = HKDF(S, "auth")` (a different HKDF label than
-  the encryption key) and admits a client by a challenge-response proving
-  possession of `K_auth`; S itself is never sent. This is self-service and
-  ntfy-easy: creating a channel is a single request, no operator and no pairing
-  ceremony. A consumer with its own device/session/key pairing (such as CodeSpeak)
-  layers that on top of, or maps it to, the channel secret; doublethink does not
-  require it. (An earlier admin-gated keypair + SAS design was dropped as
-  over-engineered, see DESIGN-M1.md.)
-- **Channel namespacing and access mapping.** How channel names map to authorised
-  parties, and how name guessing or enumeration is prevented for private
-  channels.
-- **Replay and ordering guarantees. DECIDED (M2).** Ephemeral channels are
-  at-most-once and online-only (a peer offline at publish time misses the message).
-  Retained channels (opt-in) store messages with a per-channel monotonic sequence
-  number; a reconnecting peer replays exactly the messages with a higher sequence
-  than the last it saw, in order, then resumes live. Retention is bounded (TTL +
-  per-channel and per-account caps; oldest evicted). See
-  [`DESIGN-M2.md`](DESIGN-M2.md).
-- **Operator trust model. DECIDED (M2), stated plainly.** The operator (and anyone
-  with database access) can see, for every channel: its id, the messages' type/id/
-  timestamp, ciphertext sizes, counts, and timing; and for retained channels, the
-  stored ciphertext blobs. The operator CANNOT read any private-channel payload:
-  payloads are encrypted under a key derived from the shared secret S, which the
-  broker never holds. So doublethink is **payload-blind, not metadata-blind**, and
-  retention widens the visible metadata (stored sizes/timestamps/counts). This is
-  disclosed, not defaulted away.
+- **Authentication: shared-secret challenge-response.** A private channel is gated
+  by one high-entropy shared secret S that the two parties hold. The broker stores
+  `K_auth = HKDF(S, "auth")` (a different HKDF label than the encryption key) and
+  admits a client by a challenge-response proving possession of `K_auth`; S itself
+  is never sent to the broker. Creating a channel is a single self-service request,
+  no operator, no pairing ceremony.
+- **End-to-end encryption (broker-blind).** Private-channel payloads are encrypted
+  under `K_enc = HKDF(S, "enc")` (then per-direction NaCl secretbox keys). Because
+  S is never sent to the broker and `K_enc` is a different HKDF label than the
+  `K_auth` the broker stores, the broker can authenticate holders of S but cannot
+  derive `K_enc`. It relays ciphertext it cannot read. Honest scope: the broker is
+  **payload-blind, not metadata-blind**. It still sees the channel id, the
+  envelope's `type`/`id`/`ts`, and ciphertext sizes and timing.
+- **Channel naming.** A private channel id is high-entropy and unguessable, so it
+  resists enumeration, but the id is never the security boundary; the secret is.
+  Knowing a channel name grants nothing.
+- **Replay and ordering.** Ephemeral channels are at-most-once and online-only (a
+  peer offline at publish time misses the message). Retained channels (opt-in)
+  store messages with a per-channel monotonic sequence number; a reconnecting peer
+  replays exactly the messages with a higher sequence than the last it saw, in
+  order, then resumes live. Retention is bounded by a TTL and per-channel and
+  per-account caps (oldest evicted).
+- **Operator trust model, stated plainly.** The operator (and anyone with database
+  access) can see, per channel: its id, each message's `type`/`id`/`ts`, ciphertext
+  sizes, counts, and timing; and for retained channels, the stored ciphertext
+  blobs. The operator CANNOT read any private-channel payload, that requires the
+  shared secret, which the broker never holds. Retention widens the visible
+  metadata; that is disclosed here, not defaulted away.
 
 ## Threat model (what the security posture must withstand)
 

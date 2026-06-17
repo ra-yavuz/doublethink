@@ -30,3 +30,11 @@ state.json
 
 # deploy-only, not committed (push script, stack, nginx)
 portainer/
+
+# Internal planning / design-process docs: kept locally, NOT published.
+# (Public surface is the README + docs/SECURITY.md + the code.)
+/GOAL.md
+/docs/DESIGN-M1.md
+/docs/DESIGN-M2.md
+/docs/RESEARCH.md
+/docs/CODESPEAK-REQUIREMENTS.md
