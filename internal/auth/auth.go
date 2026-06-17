@@ -1,58 +1,50 @@
-// Package auth is doublethink's broker-side authentication and authorization for
-// private channels (docs/DESIGN-M1.md decision 4b). It is separate from the
-// end-to-end encryption of payloads: this layer decides WHO may attach to a
-// channel; the E2E layer (client-side) decides who can READ the payload.
+// Package auth is doublethink's broker-side admission control for private channels
+// (docs/DESIGN-M1.md). A private channel is gated by a shared secret S that the two
+// parties hold; the broker never sees S. At channel creation the client registers
+// K_auth = HKDF(S, "doublethink-auth-v1") (see package clientcrypto); the broker
+// stores K_auth and admits a connecting client by a challenge-response that proves
+// the client can compute the same PRF over a fresh nonce.
 //
-// The gate is authentication PLUS authorization, never name-secrecy:
-//   - Authentication: a peer proves it holds the private half of an Ed25519
-//     identity key by signing a server-issued random challenge.
-//   - Authorization: that Ed25519 public key must be in the target channel's
-//     registered authorized set. Being able to authenticate for one channel grants
-//     nothing on another (SECURITY.md req 2).
+// The gate is possession of the secret, not name-secrecy: knowing a channel id
+// grants nothing without a valid response (SECURITY.md). Denials are uniform, an
+// unknown channel and a wrong response return the same error, so the broker does
+// not leak whether a private channel exists (SECURITY.md req 5).
 //
-// A peer that cannot produce a valid signature for an authorized key is rejected
-// outright (SECURITY.md req 1). Denials are uniform: "not authorized" is returned
-// identically whether the channel is unknown or the key is simply not on it, so
-// the broker never leaks whether a private channel exists (SECURITY.md req 5).
+// Broker-blindness: K_auth is derived from S by a different HKDF label than the
+// encryption key K_enc, so a broker holding K_auth still cannot derive K_enc and
+// cannot read payloads.
 package auth
 
 import (
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/subtle"
-	"encoding/base64"
 	"errors"
-	"sort"
 	"sync"
+
+	"github.com/ra-yavuz/doublethink/internal/clientcrypto"
 )
 
-// ChallengeSize is the byte length of the random nonce a peer must sign. 32 bytes
-// of CSPRNG output makes the challenge unpredictable and non-repeating in practice.
+// ChallengeSize is the byte length of the random nonce a client must respond to.
 const ChallengeSize = 32
 
-// ErrUnauthorized is the single, uniform denial. It deliberately does not
-// distinguish "no such channel" from "key not authorized" so the broker leaks no
-// information about private-channel existence (SECURITY.md req 5).
+// ErrUnauthorized is the single, uniform denial. It does not distinguish "no such
+// channel" from "wrong response", so the broker leaks no information about
+// private-channel existence (SECURITY.md req 5).
 var ErrUnauthorized = errors.New("not authorized")
 
 // ErrChannelExists is returned by Register when a channel id is already registered.
 var ErrChannelExists = errors.New("channel already registered")
 
-// Registry holds, per private channel, the set of Ed25519 public keys authorized
-// to attach. Public channels are not registered here at all: they have no auth
-// gate by definition, and the transport layer routes them without consulting auth.
-//
-// onChange, if set, is called after any mutation (Register/Authorize/Revoke/Load)
-// so a server can persist the new state. It is called without the lock held.
+// Registry maps each private channel id to its registered K_auth.
 type Registry struct {
 	mu       sync.RWMutex
-	channels map[string]map[string]struct{} // channel id -> set of base64(ed25519 pubkey)
+	channels map[string][clientcrypto.KeySize]byte // channel id -> K_auth
 	onChange func()
 }
 
 // NewRegistry returns an empty registry.
 func NewRegistry() *Registry {
-	return &Registry{channels: make(map[string]map[string]struct{})}
+	return &Registry{channels: make(map[string][clientcrypto.KeySize]byte)}
 }
 
 // OnChange registers a callback invoked after each mutation, for persistence.
@@ -71,14 +63,10 @@ func (r *Registry) notify() {
 	}
 }
 
-func keyString(pub ed25519.PublicKey) string {
-	return base64.StdEncoding.EncodeToString(pub)
-}
-
-// Register creates a private channel with an initial authorized key set. It errors
-// if the channel already exists, so re-registration is a deliberate act (rotate via
-// Authorize/Revoke or a fresh channel id), not an accidental overwrite.
-func (r *Registry) Register(channel string, authorized ...ed25519.PublicKey) error {
+// Register creates a private channel bound to the given K_auth. Errors if the
+// channel already exists, so re-registration is deliberate (rotate by recreating
+// with a fresh secret), not an accidental overwrite.
+func (r *Registry) Register(channel string, authKey [clientcrypto.KeySize]byte) error {
 	if channel == "" {
 		return errors.New("empty channel id")
 	}
@@ -87,65 +75,26 @@ func (r *Registry) Register(channel string, authorized ...ed25519.PublicKey) err
 		r.mu.Unlock()
 		return ErrChannelExists
 	}
-	set := make(map[string]struct{}, len(authorized))
-	for _, k := range authorized {
-		if len(k) == ed25519.PublicKeySize {
-			set[keyString(k)] = struct{}{}
-		}
-	}
-	r.channels[channel] = set
+	r.channels[channel] = authKey
 	r.mu.Unlock()
 	r.notify()
 	return nil
 }
 
-// Authorize adds a public key to an existing channel's authorized set (pairing a
-// second peer, or rotating in a re-paired key). Errors if the channel is unknown.
-func (r *Registry) Authorize(channel string, pub ed25519.PublicKey) error {
-	if len(pub) != ed25519.PublicKeySize {
-		return errors.New("bad public key length")
-	}
+// Remove deletes a channel (e.g. rotation by delete-then-recreate). Idempotent.
+func (r *Registry) Remove(channel string) {
 	r.mu.Lock()
-	set, ok := r.channels[channel]
-	if !ok {
-		r.mu.Unlock()
-		return ErrUnauthorized
-	}
-	set[keyString(pub)] = struct{}{}
+	_, existed := r.channels[channel]
+	delete(r.channels, channel)
 	r.mu.Unlock()
-	r.notify()
-	return nil
-}
-
-// Revoke removes a public key from a channel's authorized set. This is M1's
-// revocation primitive (DESIGN-M1.md decision 4: revocation = re-pair / rotate).
-// After Revoke the key can no longer authenticate to the channel. Idempotent.
-func (r *Registry) Revoke(channel string, pub ed25519.PublicKey) {
-	r.mu.Lock()
-	if set, ok := r.channels[channel]; ok {
-		delete(set, keyString(pub))
+	if existed {
+		r.notify()
 	}
-	r.mu.Unlock()
-	r.notify()
 }
 
-// isAuthorized reports whether pub is in channel's authorized set. Unknown channel
-// and unauthorized key both yield false, so callers cannot tell them apart.
-func (r *Registry) isAuthorized(channel string, pub ed25519.PublicKey) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	set, ok := r.channels[channel]
-	if !ok {
-		return false
-	}
-	_, ok = set[keyString(pub)]
-	return ok
-}
-
-// NewChallenge returns a fresh random challenge for a peer to sign. The caller
-// holds the returned bytes for the lifetime of one handshake and passes them back
-// to Verify; a challenge is single-use by construction (the caller discards it
-// after one Verify), which is what defeats replay of a captured signature.
+// NewChallenge returns a fresh random challenge for a client to respond to. It is
+// single-use by construction (the caller discards it after one Verify), which
+// defeats replay of a captured response.
 func NewChallenge() ([]byte, error) {
 	c := make([]byte, ChallengeSize)
 	if _, err := rand.Read(c); err != nil {
@@ -154,26 +103,34 @@ func NewChallenge() ([]byte, error) {
 	return c, nil
 }
 
-// Verify checks that `sig` is a valid Ed25519 signature over `challenge` by `pub`,
-// AND that `pub` is authorized for `channel`. Both must hold. It returns
-// ErrUnauthorized (uniform) on any failure: bad signature, unknown channel, or
-// unauthorized key. The two checks are independent: a valid signature for a key
-// that is not on this channel still fails (authorization, not just authentication).
-func (r *Registry) Verify(channel string, pub ed25519.PublicKey, challenge, sig []byte) error {
-	// Authorization first is fine; both must pass and we reveal nothing either way.
-	authorized := r.isAuthorized(channel, pub)
-	// Always run the signature check (even when unauthorized) so timing does not
-	// distinguish "unknown channel" from "bad signature".
-	sigOK := len(pub) == ed25519.PublicKeySize && ed25519.Verify(pub, challenge, sig)
-	if !authorized || !sigOK {
+// Verify checks that `response` is the correct challenge-response for `channel`:
+// the broker recomputes the expected response from the stored K_auth and compares
+// in constant time. Unknown channel or wrong response both yield ErrUnauthorized
+// (uniform). The comparison runs even on an unknown channel so timing does not
+// distinguish the two cases.
+func (r *Registry) Verify(channel string, challenge, response []byte) error {
+	r.mu.RLock()
+	authKey, ok := r.channels[channel]
+	r.mu.RUnlock()
+
+	// Recompute against a real key when known, or a throwaway when not, so both
+	// branches do the same work.
+	var expected []byte
+	if ok {
+		expected = clientcrypto.ResponseFromAuthKey(authKey, challenge)
+	} else {
+		var dummy [clientcrypto.KeySize]byte
+		expected = clientcrypto.ResponseFromAuthKey(dummy, challenge)
+	}
+	match := subtle.ConstantTimeCompare(expected, response) == 1
+	if !ok || !match {
 		return ErrUnauthorized
 	}
 	return nil
 }
 
-// HasChannel reports whether a channel is a registered private channel. For
-// transport-layer routing decisions only; it must NOT be exposed to clients,
-// since that would leak private-channel existence (SECURITY.md req 5).
+// HasChannel reports whether a channel is registered. For transport-layer routing
+// only; must NOT be exposed to clients (would leak existence, SECURITY.md req 5).
 func (r *Registry) HasChannel(channel string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -181,44 +138,31 @@ func (r *Registry) HasChannel(channel string) bool {
 	return ok
 }
 
-// Snapshot returns a plain map of channel -> sorted authorized public keys
-// (base64). Used for persistence. It is a copy; mutating it does not affect the
-// registry.
-func (r *Registry) Snapshot() map[string][]string {
+// Snapshot returns channel id -> base32 K_auth, for persistence. A copy.
+func (r *Registry) Snapshot() map[string]string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make(map[string][]string, len(r.channels))
-	for ch, set := range r.channels {
-		keys := make([]string, 0, len(set))
-		for k := range set {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		out[ch] = keys
+	out := make(map[string]string, len(r.channels))
+	for ch, k := range r.channels {
+		out[ch] = encodeKey(k)
 	}
 	return out
 }
 
-// Load replaces the registry contents from a snapshot map (base64 keys). Used at
-// server start to restore channels created earlier. Malformed keys are skipped.
-func (r *Registry) Load(snap map[string][]string) {
+// Load replaces the registry from a snapshot map (base32 K_auth). Malformed
+// entries are skipped.
+func (r *Registry) Load(snap map[string]string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.channels = make(map[string]map[string]struct{}, len(snap))
-	for ch, keys := range snap {
-		set := make(map[string]struct{}, len(keys))
-		for _, k := range keys {
-			if b, err := base64.StdEncoding.DecodeString(k); err == nil && len(b) == ed25519.PublicKeySize {
-				set[k] = struct{}{}
-			}
+	r.channels = make(map[string][clientcrypto.KeySize]byte, len(snap))
+	for ch, enc := range snap {
+		if k, err := clientcrypto.DecodeAuthKey(enc); err == nil {
+			r.channels[ch] = k
 		}
-		r.channels[ch] = set
 	}
 }
 
-// ConstantTimeChallengeEqual compares two challenges in constant time. Exposed for
-// callers that must confirm a returned challenge matches the issued one without a
-// timing side channel.
-func ConstantTimeChallengeEqual(a, b []byte) bool {
-	return subtle.ConstantTimeCompare(a, b) == 1
+func encodeKey(k [clientcrypto.KeySize]byte) string {
+	enc, _ := clientcrypto.RegistrationKeyFromBytes(k)
+	return enc
 }

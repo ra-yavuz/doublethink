@@ -1,22 +1,26 @@
-// Package transport exposes the broker over the network. It speaks two surfaces:
+// Package transport exposes the broker over the network. Everything is on ONE
+// public surface (no separate admin port); a private channel is gated by a shared
+// secret, not by who can reach an endpoint:
 //
-//   - Private channels over WebSocket (/ws). A peer must complete an Ed25519
-//     challenge/response (package auth) bound to the target channel BEFORE it may
-//     publish or subscribe. Payloads are end-to-end-encrypted by the client; the
-//     transport and broker only ever see ciphertext.
-//   - Public topics over plain HTTP, ntfy-style: POST /publish/<topic> to send,
-//     GET /subscribe/<topic> (Server-Sent Events) to receive. These are opt-in
-//     plaintext topics for users who want ntfy parity (GOAL.md).
+//   - Create a private channel: POST /channel with the channel id and K_auth (the
+//     client derived both from the shared secret S; S itself is never sent). This
+//     is self-service and needs no operator. Anyone can create a channel, exactly
+//     like picking an ntfy topic, but a private channel is useless to anyone who
+//     does not hold S.
+//   - Use a private channel over WebSocket (/ws): the client names the channel and
+//     answers a challenge with a response only a holder of S can compute. Payloads
+//     are end-to-end encrypted client-side; the broker only ever sees ciphertext.
+//   - Public plaintext topics, ntfy-style: POST /publish/<topic>, GET
+//     /subscribe/<topic> (SSE). Opt-in, no secret, fully open like ntfy.
 //
-// The easy default is the secure one: a channel registered as private rejects
-// unauthenticated access on every surface, and the public HTTP endpoints refuse
-// to touch a name that is a registered private channel (so a private channel can
-// never be reached through the open plaintext path).
+// The easy path is the secure path: creating a private channel takes one request
+// and yields a secret that is the real gate; the public plaintext endpoints refuse
+// any name that is a registered private channel, so a private channel can never be
+// reached through the open path.
 package transport
 
 import (
 	"context"
-	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -28,6 +32,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/ra-yavuz/doublethink/internal/auth"
 	"github.com/ra-yavuz/doublethink/internal/broker"
+	"github.com/ra-yavuz/doublethink/internal/clientcrypto"
 	"github.com/ra-yavuz/doublethink/internal/envelope"
 )
 
@@ -41,6 +46,7 @@ type Server struct {
 // New builds a Server with its routes registered.
 func New(b *broker.Broker, reg *auth.Registry) *Server {
 	s := &Server{broker: b, reg: reg, mux: http.NewServeMux()}
+	s.mux.HandleFunc("/channel", s.handleCreateChannel)
 	s.mux.HandleFunc("/ws", s.handleWS)
 	s.mux.HandleFunc("/publish/", s.handlePublicPublish)
 	s.mux.HandleFunc("/subscribe/", s.handlePublicSubscribe)
@@ -55,15 +61,54 @@ func New(b *broker.Broker, reg *auth.Registry) *Server {
 // http.Server, TLS config, and listen address).
 func (s *Server) Handler() http.Handler { return s.mux }
 
+const (
+	handshakeTimeout = 10 * time.Second
+	writeTimeout     = 10 * time.Second
+)
+
+// --- self-service private-channel creation ---
+
+type createChannelReq struct {
+	Channel string `json:"channel"`  // the channel id (client-chosen, ideally high-entropy)
+	AuthKey string `json:"auth_key"` // base32 K_auth, derived client-side from S
+}
+
+// handleCreateChannel registers a private channel. The client sends the channel id
+// and K_auth (NOT the secret S, NOT the encryption key). No operator, no pairing
+// ceremony: one request and the channel exists, locked to holders of S.
+func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req createChannelReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil || req.Channel == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	authKey, err := clientcrypto.DecodeAuthKey(req.AuthKey)
+	if err != nil {
+		http.Error(w, "bad auth key", http.StatusBadRequest)
+		return
+	}
+	if err := s.reg.Register(req.Channel, authKey); err != nil {
+		// Channel already exists: do not reveal it as a distinct, probeable state
+		// beyond the conflict status the creator needs.
+		http.Error(w, "channel already exists", http.StatusConflict)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"channel": req.Channel, "created": true})
+}
+
 // --- WebSocket: private channels ---
 
-// wsHandshake is the first frame a peer sends after connecting: it names the
-// channel it wants and the Ed25519 public key it will authenticate as. The
-// broker replies with a challenge (wsChallenge); the peer then sends wsAuth with
-// the signature. Only after a successful verify does pub/sub begin.
+// wsHandshake is the first frame a client sends: the channel it wants to attach to.
+// The broker replies with a random challenge; the client returns wsAuth with the
+// response only a holder of the channel secret can compute. Pub/sub begins only
+// after a successful verify.
 type wsHandshake struct {
 	Channel string `json:"channel"`
-	PubKey  string `json:"pubkey"` // base64 Ed25519 public key
 }
 
 type wsChallenge struct {
@@ -71,18 +116,13 @@ type wsChallenge struct {
 }
 
 type wsAuth struct {
-	Signature string `json:"signature"` // base64 Ed25519 signature over the challenge
+	Response string `json:"response"` // base64 challenge response derived from K_auth
 }
 
 type wsResult struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
 }
-
-const (
-	handshakeTimeout = 10 * time.Second
-	writeTimeout     = 10 * time.Second
-)
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	c, err := websocket.Accept(w, r, nil)
@@ -94,14 +134,13 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	channel, pub, err := s.authenticateWS(ctx, c)
+	channel, err := s.authenticateWS(ctx, c)
 	if err != nil {
 		// Honest, uniform failure. We do not say whether the channel exists.
 		writeJSON(ctx, c, wsResult{OK: false, Error: "not authorized"})
 		c.Close(websocket.StatusPolicyViolation, "not authorized")
 		return
 	}
-	_ = pub
 	if err := writeJSON(ctx, c, wsResult{OK: true}); err != nil {
 		return
 	}
@@ -109,42 +148,37 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	s.pumpWS(ctx, c, channel)
 }
 
-// authenticateWS runs the challenge/response. Returns the authorized channel on
-// success, or an error (uniform to the caller) on any failure.
-func (s *Server) authenticateWS(ctx context.Context, c *websocket.Conn) (string, ed25519.PublicKey, error) {
+// authenticateWS runs the shared-secret challenge/response. Returns the authorized
+// channel on success, or a uniform error on any failure.
+func (s *Server) authenticateWS(ctx context.Context, c *websocket.Conn) (string, error) {
 	hctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 
 	var hs wsHandshake
 	if err := readJSON(hctx, c, &hs); err != nil {
-		return "", nil, err
+		return "", err
 	}
-	pubBytes, err := base64.StdEncoding.DecodeString(hs.PubKey)
-	if err != nil || len(pubBytes) != ed25519.PublicKeySize {
-		return "", nil, auth.ErrUnauthorized
-	}
-	pub := ed25519.PublicKey(pubBytes)
 
 	challenge, err := auth.NewChallenge()
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 	if err := writeJSON(hctx, c, wsChallenge{Challenge: base64.StdEncoding.EncodeToString(challenge)}); err != nil {
-		return "", nil, err
+		return "", err
 	}
 
 	var a wsAuth
 	if err := readJSON(hctx, c, &a); err != nil {
-		return "", nil, err
+		return "", err
 	}
-	sig, err := base64.StdEncoding.DecodeString(a.Signature)
+	response, err := base64.StdEncoding.DecodeString(a.Response)
 	if err != nil {
-		return "", nil, auth.ErrUnauthorized
+		return "", auth.ErrUnauthorized
 	}
-	if err := s.reg.Verify(hs.Channel, pub, challenge, sig); err != nil {
-		return "", nil, err
+	if err := s.reg.Verify(hs.Channel, challenge, response); err != nil {
+		return "", err
 	}
-	return hs.Channel, pub, nil
+	return hs.Channel, nil
 }
 
 // pumpWS runs the bidirectional loop once authenticated: it subscribes the peer to

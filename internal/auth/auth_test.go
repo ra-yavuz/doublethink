@@ -1,187 +1,138 @@
 package auth
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"errors"
 	"testing"
+
+	"github.com/ra-yavuz/doublethink/internal/clientcrypto"
 )
 
-func newKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
+// register a channel from a fresh secret, returning the secret so the test can
+// compute the matching challenge response (as a real client would).
+func registerChannel(t *testing.T, r *Registry, channel string) string {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	secret, err := clientcrypto.GenerateSecret()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pub, priv
-}
-
-// A correctly-signed challenge by an authorized key on the right channel passes.
-func TestVerifyAuthorizedKeySucceeds(t *testing.T) {
-	r := NewRegistry()
-	pub, priv := newKey(t)
-	if err := r.Register("chan-x", pub); err != nil {
-		t.Fatal(err)
-	}
-	ch, err := NewChallenge()
+	ka, err := clientcrypto.AuthKey(secret)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sig := ed25519.Sign(priv, ch)
-	if err := r.Verify("chan-x", pub, ch, sig); err != nil {
-		t.Fatalf("authorized signed challenge rejected: %v", err)
-	}
-}
-
-// Test 1 (SECURITY.md req 1): an unauthenticated peer is rejected. Here the peer
-// presents a key with a bogus/zero signature; it must be refused.
-func TestUnauthenticatedRejected(t *testing.T) {
-	r := NewRegistry()
-	pub, _ := newKey(t)
-	if err := r.Register("chan-x", pub); err != nil {
+	if err := r.Register(channel, ka); err != nil {
 		t.Fatal(err)
 	}
+	return secret
+}
+
+func respond(t *testing.T, secret string, challenge []byte) []byte {
+	t.Helper()
+	resp, err := clientcrypto.ChallengeResponse(secret, challenge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+// A holder of the secret answers the challenge correctly and is admitted.
+func TestVerifyHolderSucceeds(t *testing.T) {
+	r := NewRegistry()
+	secret := registerChannel(t, r, "chan-x")
 	ch, _ := NewChallenge()
-	badSig := make([]byte, ed25519.SignatureSize) // all zeros, not a real signature
-	if err := r.Verify("chan-x", pub, ch, badSig); !errors.Is(err, ErrUnauthorized) {
-		t.Fatalf("bad signature accepted or wrong error: %v", err)
+	if err := r.Verify("chan-x", ch, respond(t, secret, ch)); err != nil {
+		t.Fatalf("holder of the secret rejected: %v", err)
 	}
 }
 
-// Test 2 (SECURITY.md req 2): another authenticated party cannot attach to a
-// channel it is not authorized for. The intruder holds a perfectly valid key and
-// signs correctly, but is registered on a DIFFERENT channel.
-func TestOtherAuthenticatedPartyRejected(t *testing.T) {
+// Test 1 (SECURITY.md req 1): a client that does not hold the secret is rejected.
+func TestNonHolderRejected(t *testing.T) {
 	r := NewRegistry()
-	ownerPub, _ := newKey(t)
-	intruderPub, intruderPriv := newKey(t)
-
-	if err := r.Register("private-A", ownerPub); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Register("private-B", intruderPub); err != nil {
-		t.Fatal(err)
-	}
-
-	// The intruder authenticates flawlessly for its OWN channel...
+	registerChannel(t, r, "chan-x")
 	ch, _ := NewChallenge()
-	sig := ed25519.Sign(intruderPriv, ch)
-	if err := r.Verify("private-B", intruderPub, ch, sig); err != nil {
-		t.Fatalf("intruder rejected on its own channel: %v", err)
-	}
-	// ...but the same valid signature must NOT grant access to channel A.
-	ch2, _ := NewChallenge()
-	sig2 := ed25519.Sign(intruderPriv, ch2)
-	if err := r.Verify("private-A", intruderPub, ch2, sig2); !errors.Is(err, ErrUnauthorized) {
-		t.Fatalf("authenticated-but-unauthorized party reached channel A: %v", err)
+	wrongSecret, _ := clientcrypto.GenerateSecret()
+	if err := r.Verify("chan-x", ch, respond(t, wrongSecret, ch)); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("non-holder admitted or wrong error: %v", err)
 	}
 }
 
-// Test 4 (SECURITY.md req 5): denial is uniform. An unknown channel and an
-// unauthorized key on a known channel must return the SAME error, so the broker
-// does not leak whether a private channel exists.
-func TestUniformDenialNoExistenceLeak(t *testing.T) {
+// Test 2 (SECURITY.md req 2): a holder of channel A's secret cannot attach to
+// channel B. Knowing one channel's secret grants nothing on another.
+func TestSecretBoundToOwnChannel(t *testing.T) {
 	r := NewRegistry()
-	ownerPub, _ := newKey(t)
-	strangerPub, strangerPriv := newKey(t)
-	if err := r.Register("known", ownerPub); err != nil {
-		t.Fatal(err)
-	}
-
+	secretA := registerChannel(t, r, "A")
+	registerChannel(t, r, "B")
 	ch, _ := NewChallenge()
-	sig := ed25519.Sign(strangerPriv, ch)
-
-	errUnknownChannel := r.Verify("does-not-exist", strangerPub, ch, sig)
-	errUnauthorizedKey := r.Verify("known", strangerPub, ch, sig)
-
-	if !errors.Is(errUnknownChannel, ErrUnauthorized) {
-		t.Errorf("unknown channel error = %v, want ErrUnauthorized", errUnknownChannel)
-	}
-	if !errors.Is(errUnauthorizedKey, ErrUnauthorized) {
-		t.Errorf("unauthorized key error = %v, want ErrUnauthorized", errUnauthorizedKey)
-	}
-	if errUnknownChannel.Error() != errUnauthorizedKey.Error() {
-		t.Errorf("denials differ and leak existence:\n  unknown channel: %q\n  unauthorized key: %q",
-			errUnknownChannel.Error(), errUnauthorizedKey.Error())
+	// A correct response for A's secret, presented against channel B, must fail.
+	if err := r.Verify("B", ch, respond(t, secretA, ch)); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("A's secret reached channel B: %v", err)
 	}
 }
 
-// Revocation (DESIGN-M1.md decision 4): after Revoke, a previously-authorized key
-// can no longer authenticate. This is M1's revoke-by-re-pair primitive.
-func TestRevoke(t *testing.T) {
+// Test 4 (SECURITY.md req 5): unknown channel and wrong response return the SAME
+// error, so the broker does not leak whether a private channel exists.
+func TestUniformDenial(t *testing.T) {
 	r := NewRegistry()
-	pub, priv := newKey(t)
-	if err := r.Register("c", pub); err != nil {
-		t.Fatal(err)
-	}
+	registerChannel(t, r, "known")
 	ch, _ := NewChallenge()
-	sig := ed25519.Sign(priv, ch)
-	if err := r.Verify("c", pub, ch, sig); err != nil {
-		t.Fatalf("authorized before revoke should pass: %v", err)
+	stranger, _ := clientcrypto.GenerateSecret()
+	errUnknown := r.Verify("does-not-exist", ch, respond(t, stranger, ch))
+	errWrong := r.Verify("known", ch, respond(t, stranger, ch))
+	if !errors.Is(errUnknown, ErrUnauthorized) || !errors.Is(errWrong, ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized both: %v / %v", errUnknown, errWrong)
 	}
-
-	r.Revoke("c", pub)
-	r.Revoke("c", pub) // idempotent
-
-	ch2, _ := NewChallenge()
-	sig2 := ed25519.Sign(priv, ch2)
-	if err := r.Verify("c", pub, ch2, sig2); !errors.Is(err, ErrUnauthorized) {
-		t.Fatalf("revoked key still authenticates: %v", err)
+	if errUnknown.Error() != errWrong.Error() {
+		t.Errorf("denials differ and leak existence: %q vs %q", errUnknown, errWrong)
 	}
 }
 
-// Authorize adds a second peer to a channel (the two-peer pairing case).
-func TestAuthorizeSecondPeer(t *testing.T) {
+// Replay: a response captured for one challenge does not authenticate the next
+// (fresh) challenge.
+func TestReplayedResponseFails(t *testing.T) {
 	r := NewRegistry()
-	a, aPriv := newKey(t)
-	b, bPriv := newKey(t)
-	if err := r.Register("pair", a); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Authorize("pair", b); err != nil {
-		t.Fatal(err)
-	}
-	for name, priv := range map[string]ed25519.PrivateKey{"peer-a": aPriv, "peer-b": bPriv} {
-		var pub ed25519.PublicKey
-		if name == "peer-a" {
-			pub = a
-		} else {
-			pub = b
-		}
-		ch, _ := NewChallenge()
-		sig := ed25519.Sign(priv, ch)
-		if err := r.Verify("pair", pub, ch, sig); err != nil {
-			t.Errorf("%s rejected after pairing: %v", name, err)
-		}
-	}
-}
-
-// Authorizing on an unknown channel is a uniform denial, not a silent create.
-func TestAuthorizeUnknownChannelDenied(t *testing.T) {
-	r := NewRegistry()
-	pub, _ := newKey(t)
-	if err := r.Authorize("nope", pub); !errors.Is(err, ErrUnauthorized) {
-		t.Errorf("Authorize on unknown channel = %v, want ErrUnauthorized", err)
-	}
-}
-
-// A replayed signature for a DIFFERENT challenge fails: the signature is over the
-// issued challenge, and a fresh challenge each handshake means a captured
-// (challenge, sig) pair does not authenticate the next handshake.
-func TestReplayedSignatureFailsOnNewChallenge(t *testing.T) {
-	r := NewRegistry()
-	pub, priv := newKey(t)
-	if err := r.Register("c", pub); err != nil {
-		t.Fatal(err)
-	}
+	secret := registerChannel(t, r, "c")
 	ch1, _ := NewChallenge()
-	sig1 := ed25519.Sign(priv, ch1)
-	if err := r.Verify("c", pub, ch1, sig1); err != nil {
+	resp1 := respond(t, secret, ch1)
+	if err := r.Verify("c", ch1, resp1); err != nil {
 		t.Fatal(err)
 	}
-	// New handshake issues a new challenge; replaying the old signature must fail.
 	ch2, _ := NewChallenge()
-	if err := r.Verify("c", pub, ch2, sig1); !errors.Is(err, ErrUnauthorized) {
-		t.Fatalf("replayed signature accepted against a fresh challenge: %v", err)
+	if err := r.Verify("c", ch2, resp1); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("replayed response accepted against a fresh challenge: %v", err)
+	}
+}
+
+// Register is single-shot: a second Register for the same channel errors.
+func TestRegisterTwiceErrors(t *testing.T) {
+	r := NewRegistry()
+	registerChannel(t, r, "c")
+	var k [clientcrypto.KeySize]byte
+	if err := r.Register("c", k); !errors.Is(err, ErrChannelExists) {
+		t.Fatalf("re-register = %v, want ErrChannelExists", err)
+	}
+}
+
+// Remove deletes a channel; afterward its holder can no longer attach.
+func TestRemove(t *testing.T) {
+	r := NewRegistry()
+	secret := registerChannel(t, r, "c")
+	r.Remove("c")
+	r.Remove("c") // idempotent
+	ch, _ := NewChallenge()
+	if err := r.Verify("c", ch, respond(t, secret, ch)); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("removed channel still admits: %v", err)
+	}
+}
+
+// Snapshot/Load round-trips the registry (persistence).
+func TestSnapshotLoad(t *testing.T) {
+	r := NewRegistry()
+	secret := registerChannel(t, r, "c")
+	snap := r.Snapshot()
+
+	r2 := NewRegistry()
+	r2.Load(snap)
+	ch, _ := NewChallenge()
+	if err := r2.Verify("c", ch, respond(t, secret, ch)); err != nil {
+		t.Fatalf("reloaded registry rejected the holder: %v", err)
 	}
 }

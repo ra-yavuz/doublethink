@@ -20,8 +20,7 @@ import (
 
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	addr := fs.String("addr", ":8080", "public listen address for channels (WebSocket + plaintext HTTP)")
-	adminAddr := fs.String("admin-addr", "127.0.0.1:8081", "loopback-only admin/pairing listen address")
+	addr := fs.String("addr", ":8080", "listen address for the broker (channels, create, plaintext topics)")
 	statePath := fs.String("state", defaultStatePath(), "path to the channel state file")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: doublethink serve [flags]\n\n")
@@ -46,22 +45,17 @@ func runServe(args []string) error {
 	})
 
 	srv := transport.New(b, reg)
-	var adminReg transport.Registry = reg
-	adminAPI := transport.NewAdminAPI(&adminReg)
 
 	// The startup log carries the no-warranty disclaimer (project rule 3).
 	log.Printf("doublethink starting")
 	log.Printf("NO WARRANTY: provided as is; you are responsible for deployment, security, and the data that flows through it. The author is not liable for any harm, however caused.")
-	log.Printf("channels (public + private) on %s", *addr)
-	log.Printf("admin/pairing on %s (loopback only, do not expose off-host)", *adminAddr)
+	log.Printf("listening on %s (channels, create, plaintext topics)", *addr)
 	log.Printf("state file: %s", *statePath)
 
 	public := &http.Server{Addr: *addr, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	admin := &http.Server{Addr: *adminAddr, Handler: adminAPI.Handler(), ReadHeaderTimeout: 10 * time.Second}
 
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 1)
 	go func() { errCh <- public.ListenAndServe() }()
-	go func() { errCh <- admin.ListenAndServe() }()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -72,7 +66,6 @@ func runServe(args []string) error {
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = public.Shutdown(sctx)
-		_ = admin.Shutdown(sctx)
 		return nil
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {
@@ -82,11 +75,11 @@ func runServe(args []string) error {
 	}
 }
 
-// stateFile is the on-disk shape of the channel registry. It holds only public
-// data (channel ids and authorized Ed25519 public keys); no private key is ever
-// written here.
+// stateFile is the on-disk shape of the channel registry. It holds only channel
+// ids and their K_auth (base32). It does NOT hold the shared secret S or the
+// encryption key, so the state file alone cannot read any private-channel payload.
 type stateFile struct {
-	Channels map[string][]string `json:"channels"` // channel id -> base64 ed25519 pubkeys
+	Channels map[string]string `json:"channels"` // channel id -> base32 K_auth
 }
 
 func defaultStatePath() string {

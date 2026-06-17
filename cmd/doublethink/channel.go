@@ -12,63 +12,60 @@ import (
 	"github.com/ra-yavuz/doublethink/internal/clientcrypto"
 )
 
-// runChannel handles "doublethink channel create": mint a private channel and
-// enrol the creating (first) peer. The creator owns the channel from the start, so
-// it is admitted directly; the SECOND peer joins later via invite + SAS confirm.
+// runChannel handles "doublethink channel create": self-service creation of a
+// private channel. The client mints a shared secret S, derives K_auth from it,
+// registers only the channel id + K_auth with the broker (never S), and prints S.
+// Whoever holds S can join the channel and read its traffic; no operator, no
+// pairing ceremony.
 func runChannel(args []string) error {
 	if len(args) < 1 || args[0] != "create" {
 		return fmt.Errorf("usage: doublethink channel create [flags]")
 	}
 	fs := flag.NewFlagSet("channel create", flag.ContinueOnError)
-	adminURL := fs.String("admin", "http://127.0.0.1:8081", "admin API base URL of a running server")
+	server := fs.String("server", "http://127.0.0.1:8080", "base URL of the doublethink broker")
 	prefix := fs.String("prefix", "", "optional human prefix for the channel id (e.g. codespeak)")
-	identityPath := fs.String("identity", "", "path to write the creating peer's identity file (required)")
-	role := fs.String("role", "agent", "this peer's role label (e.g. agent, pwa)")
-	quiet := fs.Bool("quiet", false, "print only the channel id (for scripting)")
+	quiet := fs.Bool("quiet", false, "print only 'channel<TAB>secret' (for scripting)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: doublethink channel create --identity <file> [flags]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: doublethink channel create [flags]\n\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	if *identityPath == "" {
-		fs.Usage()
-		return fmt.Errorf("--identity is required (the creator's private keys are stored there)")
-	}
 
-	// A high-entropy random channel id so the name is unguessable. The id is not
-	// the security boundary (auth is), but unguessability removes enumeration as a
-	// cheap attack (DESIGN-M1.md decision 5).
+	// High-entropy, unguessable channel id (the name is not the gate, the secret
+	// is, but an unguessable id removes enumeration as a cheap probe).
 	id, err := randomChannelID(*prefix)
 	if err != nil {
 		return err
 	}
 
-	creator, err := clientcrypto.GenerateIdentity()
+	// The shared secret S: generated here, shared out of band, NEVER sent to the
+	// broker. K_auth is what the broker stores.
+	secret, err := clientcrypto.GenerateSecret()
 	if err != nil {
-		return fmt.Errorf("generating identity: %w", err)
+		return err
 	}
-	ecdh := creator.ECDHPublic()
-	req := map[string]string{
-		"channel":  id,
-		"id_pub":   b64(creator.SignPub),
-		"ecdh_pub": b64(ecdh[:]),
+	authKey, err := clientcrypto.RegistrationKey(secret)
+	if err != nil {
+		return err
 	}
-	if err := adminPost(*adminURL, "/admin/channel/create", req, nil); err != nil {
+
+	req := map[string]string{"channel": id, "auth_key": authKey}
+	if err := postJSON(*server, "/channel", req, nil); err != nil {
 		return fmt.Errorf("creating channel: %w", err)
-	}
-	if err := saveIdentity(*identityPath, peerIdentityFile{Channel: id, Role: *role, Identity: creator.Export()}); err != nil {
-		return fmt.Errorf("writing identity file: %w", err)
 	}
 
 	if *quiet {
-		fmt.Println(id)
+		fmt.Printf("%s\t%s\n", id, secret)
 		return nil
 	}
-	fmt.Printf("created private channel and enrolled this peer (role %q):\n  %s\n\n", *role, id)
-	fmt.Printf("identity saved to %s (keep private; never sent to the broker)\n\n", *identityPath)
-	fmt.Printf("invite the second peer with:\n  doublethink invite --channel %s --identity %s\n", id, *identityPath)
+	fmt.Printf("created private channel:\n")
+	fmt.Printf("  channel: %s\n", id)
+	fmt.Printf("  secret:  %s\n\n", secret)
+	fmt.Printf("Share the secret with the other party over a trusted channel. Anyone who\n")
+	fmt.Printf("holds it can join and read this channel; the broker never sees it and cannot\n")
+	fmt.Printf("read your messages. To use the channel, both parties connect with --secret.\n")
 	return nil
 }
 

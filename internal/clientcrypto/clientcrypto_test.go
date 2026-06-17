@@ -5,140 +5,161 @@ import (
 	"testing"
 )
 
-// pairedSessions sets up two device identities, exchanges public keys, and derives
-// each peer's session for a channel, exactly as pairing then connecting would.
-func pairedSessions(t *testing.T, channel string) (a, b *Session, idA, idB *Identity) {
-	t.Helper()
-	idA, err := GenerateIdentity()
-	if err != nil {
-		t.Fatal(err)
-	}
-	idB, err = GenerateIdentity()
-	if err != nil {
-		t.Fatal(err)
-	}
-	a, err = idA.Derive(idB.ECDHPublic(), channel)
-	if err != nil {
-		t.Fatalf("peer A derive: %v", err)
-	}
-	b, err = idB.Derive(idA.ECDHPublic(), channel)
-	if err != nil {
-		t.Fatalf("peer B derive: %v", err)
-	}
-	return a, b, idA, idB
-}
-
-// The core round trip: what peer A seals, peer B opens, and vice versa. This is
-// the bidirectional confidentiality both directions of CodeSpeak's channel need.
+// Two parties holding the SAME shared secret S derive mirrored sessions and can
+// exchange messages both ways. This is the core ntfy-easy property: share one
+// secret, both can talk.
 func TestSealOpenBothDirections(t *testing.T) {
-	a, b, _, _ := pairedSessions(t, "codespeak/xyz")
-
-	msgAtoB := []byte(`{"step":"ran tests","detail":"42 passed"}`)
-	blob, err := a.Seal(msgAtoB)
+	secret, err := GenerateSecret()
 	if err != nil {
 		t.Fatal(err)
 	}
+	a, err := NewSession(secret, RoleA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NewSession(secret, RoleB)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msgAB := []byte(`{"step":"ran tests"}`)
+	blob, _ := a.Seal(msgAB)
 	got, err := b.Open(blob)
 	if err != nil {
 		t.Fatalf("B could not open A's message: %v", err)
 	}
-	if !bytes.Equal(got, msgAtoB) {
-		t.Errorf("A->B plaintext mismatch:\n got %s\nwant %s", got, msgAtoB)
+	if !bytes.Equal(got, msgAB) {
+		t.Errorf("A->B mismatch: %s vs %s", got, msgAB)
 	}
 
-	msgBtoA := []byte(`{"control":"barge-in"}`)
-	blob2, err := b.Seal(msgBtoA)
-	if err != nil {
-		t.Fatal(err)
-	}
+	msgBA := []byte(`{"control":"barge-in"}`)
+	blob2, _ := b.Seal(msgBA)
 	got2, err := a.Open(blob2)
 	if err != nil {
 		t.Fatalf("A could not open B's message: %v", err)
 	}
-	if !bytes.Equal(got2, msgBtoA) {
-		t.Errorf("B->A plaintext mismatch:\n got %s\nwant %s", got2, msgBtoA)
+	if !bytes.Equal(got2, msgBA) {
+		t.Errorf("B->A mismatch: %s vs %s", got2, msgBA)
 	}
 }
 
-// Test 3, the differentiator (SECURITY.md req 3): the broker, holding only the
-// sealed blob and NO key, cannot recover the plaintext. We simulate the broker by
-// having a third identity (or no key at all) try to open the blob.
-func TestBrokerCannotReadSealedPayload(t *testing.T) {
-	a, _, _, _ := pairedSessions(t, "private")
-	secret := []byte("code context and a shell command the operator must not see")
-	blob, err := a.Seal(secret)
-	if err != nil {
-		t.Fatal(err)
-	}
+// The differentiator (SECURITY.md req 3): the broker holds only the channel id and
+// K_auth, never S, so it cannot derive K_enc and cannot read the payload. We model
+// that: a party with a DIFFERENT secret cannot open the blob, and the plaintext is
+// absent from the ciphertext.
+func TestBrokerCannotReadPayload(t *testing.T) {
+	secret, _ := GenerateSecret()
+	a, _ := NewSession(secret, RoleA)
+	plaintext := []byte("code context and a shell command the operator must not see")
+	blob, _ := a.Seal(plaintext)
 
-	// The plaintext must not appear anywhere in the blob that crosses the broker.
-	if bytes.Contains(blob, secret) {
-		t.Fatal("plaintext is present in the sealed blob the broker sees")
+	if bytes.Contains(blob, plaintext) {
+		t.Fatal("plaintext present in the sealed blob the broker forwards")
 	}
-
-	// A third party (the broker, or any eavesdropper) with its OWN freshly derived
-	// session cannot open it: it never had either peer's private key.
-	eve, _, _, _ := pairedSessions(t, "private")
+	// A different secret = different K_enc; cannot open.
+	other, _ := GenerateSecret()
+	eve, _ := NewSession(other, RoleB)
 	if _, err := eve.Open(blob); err == nil {
-		t.Fatal("an unrelated session opened the sealed payload; confidentiality broken")
+		t.Fatal("a session from a different secret opened the payload; confidentiality broken")
 	}
 }
 
-// A key bound to a DIFFERENT channel id derives a different secret, so a blob
-// sealed for one channel cannot be opened with another channel's session even by
-// the same two peers. This ties the crypto to the channel (anti-confusion).
-func TestChannelBindingSeparatesKeys(t *testing.T) {
-	idA, _ := GenerateIdentity()
-	idB, _ := GenerateIdentity()
-
-	aChan1, _ := idA.Derive(idB.ECDHPublic(), "channel-1")
-	bChan2, _ := idB.Derive(idA.ECDHPublic(), "channel-2")
-
-	blob, err := aChan1.Seal([]byte("hello"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := bChan2.Open(blob); err == nil {
-		t.Fatal("a blob sealed for channel-1 opened under channel-2's session")
+// K_auth (what the broker stores) does not let anyone derive K_enc: a holder of
+// only K_auth (the broker) cannot construct a session that opens the payload. We
+// check this structurally: K_auth and the encryption keys come from different HKDF
+// labels, so the registration key must differ from anything used for encryption.
+func TestAuthKeyIndependentOfEncryption(t *testing.T) {
+	secret, _ := GenerateSecret()
+	ka, _ := AuthKey(secret)
+	a, _ := NewSession(secret, RoleA)
+	if ka == a.send || ka == a.recv {
+		t.Fatal("K_auth equals an encryption key; broker holding K_auth could read payloads")
 	}
 }
 
-// Tampering with the ciphertext is detected (Poly1305 authentication).
+// A wrong secret produces a different K_auth, so the broker's challenge-response
+// rejects it (verified here by the response differing for different secrets).
+func TestResponseDiffersBySecret(t *testing.T) {
+	s1, _ := GenerateSecret()
+	s2, _ := GenerateSecret()
+	challenge := []byte("0123456789abcdef0123456789abcdef")
+	r1, _ := ChallengeResponse(s1, challenge)
+	r2, _ := ChallengeResponse(s2, challenge)
+	if bytes.Equal(r1, r2) {
+		t.Fatal("two different secrets produced the same challenge response")
+	}
+	// And the broker, recomputing from the registered K_auth, matches the holder.
+	ka, _ := AuthKey(s1)
+	if !bytes.Equal(ChallengeResponse1(ka, challenge), r1) {
+		t.Fatal("broker recomputation does not match the client response")
+	}
+}
+
+// helper mirroring the broker-side recomputation, for the test above.
+func ChallengeResponse1(ka [keySize]byte, challenge []byte) []byte {
+	return ResponseFromAuthKey(ka, challenge)
+}
+
+// Per-direction keys differ, so the two parties never share a nonce domain.
+func TestPerDirectionKeysDiffer(t *testing.T) {
+	secret, _ := GenerateSecret()
+	a, _ := NewSession(secret, RoleA)
+	b, _ := NewSession(secret, RoleB)
+	if a.send == b.send {
+		t.Fatal("both roles share one send key; per-direction separation missing")
+	}
+	if a.send != b.recv || b.send != a.recv {
+		t.Fatal("direction keys are not mirrored between the two roles")
+	}
+}
+
+// Tampering is detected (Poly1305).
 func TestTamperingDetected(t *testing.T) {
-	a, b, _, _ := pairedSessions(t, "c")
-	blob, err := a.Seal([]byte("intact"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Flip a bit in the ciphertext region (after the 24-byte nonce).
+	secret, _ := GenerateSecret()
+	a, _ := NewSession(secret, RoleA)
+	b, _ := NewSession(secret, RoleB)
+	blob, _ := a.Seal([]byte("intact"))
 	tampered := append([]byte(nil), blob...)
 	tampered[len(tampered)-1] ^= 0x01
 	if _, err := b.Open(tampered); err == nil {
-		t.Fatal("tampered ciphertext opened successfully; integrity broken")
+		t.Fatal("tampered ciphertext opened; integrity broken")
 	}
 }
 
-// Each Seal uses a fresh nonce, so encrypting the same plaintext twice yields
-// different blobs (no deterministic leakage).
+// Fresh nonce per seal: same plaintext twice yields different blobs.
 func TestNonceFreshness(t *testing.T) {
-	a, _, _, _ := pairedSessions(t, "c")
-	p := []byte("same plaintext")
-	b1, _ := a.Seal(p)
-	b2, _ := a.Seal(p)
+	secret, _ := GenerateSecret()
+	a, _ := NewSession(secret, RoleA)
+	b1, _ := a.Seal([]byte("same"))
+	b2, _ := a.Seal([]byte("same"))
 	if bytes.Equal(b1, b2) {
-		t.Fatal("two seals of the same plaintext produced identical blobs (nonce reuse?)")
+		t.Fatal("two seals of the same plaintext are identical (nonce reuse?)")
 	}
 }
 
-// Per-sender keys: peer A's send key differs from peer B's send key, so the two
-// peers do not share a key or a nonce domain (the CODEX-flagged footgun is fixed).
-func TestPerSenderKeysDiffer(t *testing.T) {
-	a, b, _, _ := pairedSessions(t, "c")
-	if a.send == b.send {
-		t.Fatal("both peers share one send key; per-direction separation missing")
+// Round-trip of the registration key (broker persistence path).
+func TestAuthKeyEncodeDecode(t *testing.T) {
+	secret, _ := GenerateSecret()
+	enc, _ := RegistrationKey(secret)
+	k, err := DecodeAuthKey(enc)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// A's send must equal B's recv, and vice versa, or the round trip would fail.
-	if a.send != b.recv || b.send != a.recv {
-		t.Fatal("direction keys are not mirrored between peers")
+	ka, _ := AuthKey(secret)
+	if k != ka {
+		t.Fatal("decoded registration key does not match K_auth")
+	}
+	reEnc, _ := RegistrationKeyFromBytes(k)
+	if reEnc != enc {
+		t.Fatal("re-encode mismatch")
+	}
+}
+
+func TestInvalidSecretRejected(t *testing.T) {
+	if _, err := NewSession("!!!notbase32!!!", RoleA); err == nil {
+		t.Error("NewSession accepted a malformed secret")
+	}
+	if _, err := AuthKey("short"); err == nil {
+		t.Error("AuthKey accepted a too-short secret")
 	}
 }
