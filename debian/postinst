@@ -1,0 +1,48 @@
+#!/bin/sh
+# postinst for doublethink
+set -e
+
+case "$1" in
+    configure)
+        # The service runs under DynamicUser, so there is no system user/group to
+        # create here; systemd allocates one at runtime and owns StateDirectory.
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+            # Enable and start the broker. It is safe by default: private channels
+            # reject unauthenticated access, and the admin/pairing API binds to
+            # loopback only. The public channels port (:8080) is plaintext-topic
+            # capable; an operator who wants TLS should front it with a reverse
+            # proxy or adjust the unit. This is documented in the README.
+            systemctl enable doublethink.service || true
+            systemctl restart doublethink.service || true
+        fi
+        cat >&2 <<'EOF'
+
+================================================================
+  doublethink installed.
+================================================================
+  The broker is enabled and listening on :8080 (channels) with the
+  admin/pairing API on 127.0.0.1:8081 (loopback only; do NOT expose it).
+
+  NO WARRANTY: doublethink carries other parties' private traffic and
+  enforces access to it. It is provided AS IS. You alone are responsible
+  for deployment, security, and the data that flows through it. The
+  author is not liable for any harm, however caused.
+
+  Quickstart and full disclaimer:
+    /usr/share/doc/doublethink/README.md
+================================================================
+
+EOF
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

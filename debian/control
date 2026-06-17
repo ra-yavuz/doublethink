@@ -1,0 +1,35 @@
+Source: doublethink
+Section: net
+Priority: optional
+Maintainer: Ramazan Yavuz <yavuzramazan1994@gmail.com>
+Build-Depends: debhelper-compat (= 13), golang-go (>= 2:1.25~)
+Standards-Version: 4.6.2
+Homepage: https://github.com/ra-yavuz/doublethink
+Vcs-Git: https://github.com/ra-yavuz/doublethink.git
+Vcs-Browser: https://github.com/ra-yavuz/doublethink
+Rules-Requires-Root: no
+
+Package: doublethink
+Architecture: any
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: secure pub/sub broker, ntfy-easy with genuinely private channels
+ doublethink is a publish/subscribe message broker that is as easy to stand up as
+ ntfy, but with real authentication and genuinely private channels. ntfy is
+ effortless because its topic name is the only gate; doublethink keeps that ease
+ and adds the thing ntfy omits: identity and private channels you can trust with
+ real traffic.
+ .
+ Private channels admit only authenticated, authorised parties (Ed25519
+ challenge/response; knowing a channel name grants no access), and their payloads
+ are end-to-end encrypted between the paired peers so the broker operator never
+ sees plaintext. Pairing is man-in-the-middle resistant via single-use invite
+ codes and an out-of-band short authentication string. Opt-in plaintext public
+ topics are available ntfy-style for those who want them. Delivery is
+ bidirectional, asynchronous, and streaming.
+ .
+ DISCLAIMER: doublethink carries other parties' private traffic and enforces
+ access to it. It is provided AS IS, WITHOUT WARRANTY OF ANY KIND. You alone are
+ responsible for how you deploy and secure it and for the data that flows through
+ it. The author is not liable for any harm, data loss, data exposure, or security
+ incident, however caused. No security mechanism is perfect. See
+ /usr/share/doc/doublethink/README.md for the full disclaimer.

@@ -1,0 +1,19 @@
+#!/usr/bin/make -f
+
+export DH_GOPKG := github.com/ra-yavuz/doublethink
+export GOFLAGS := -trimpath
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	go build -trimpath -ldflags=-s -o doublethink ./cmd/doublethink
+
+override_dh_auto_install:
+	install -D -m 0755 doublethink debian/doublethink/usr/bin/doublethink
+	install -D -m 0644 systemd/doublethink.service debian/doublethink/lib/systemd/system/doublethink.service
+	install -D -m 0644 README.md debian/doublethink/usr/share/doc/doublethink/README.md
+	install -D -m 0644 LICENSE debian/doublethink/usr/share/doc/doublethink/copyright
+
+override_dh_auto_test:
+	go test ./...

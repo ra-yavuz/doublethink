@@ -1,0 +1,15 @@
+doublethink (0.1.0) unstable; urgency=medium
+
+  * Initial release: M1 secure pub/sub broker.
+  * Private channels with Ed25519 challenge/response authentication and
+    per-channel authorisation (knowing a channel name grants no access).
+  * Broker-blind end-to-end encryption of private-channel payloads
+    (X25519 ECDH, per-direction NaCl secretbox); the broker never sees plaintext.
+  * MITM-resistant pairing: single-use, short-TTL invite codes plus an
+    out-of-band short authentication string (SAS) confirmed before a peer's key
+    is admitted.
+  * Opt-in plaintext public topics, ntfy-style (HTTP POST publish, SSE subscribe).
+  * Bidirectional, asynchronous, streaming delivery; barge-in control is not
+    blocked behind a peer's stream.
+
+ -- Ramazan Yavuz <yavuzramazan1994@gmail.com>  Wed, 17 Jun 2026 20:30:00 +0000
