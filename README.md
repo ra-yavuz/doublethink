@@ -7,11 +7,44 @@ effectively public. doublethink keeps the minutes-to-set-up ergonomics and adds
 the thing ntfy deliberately omits: identity, authentication, and private
 channels you can trust with real traffic.
 
-> **Status: specification.** This repository currently contains the project
-> definition, not an implementation. Start with [`GOAL.md`](GOAL.md), the
-> canonical endgoal. The mechanism (transport, auth scheme, crypto model,
-> hosting) is deliberately still open and is the subject of the design and
-> research phase.
+> **Status: M1 working, pre-release.** The prior-art research is done
+> ([`docs/RESEARCH.md`](docs/RESEARCH.md)) and the first milestone is implemented
+> and tested: a runnable broker you can stand up, create a private channel on,
+> pair two authenticated peers, and exchange end-to-end-encrypted streamed
+> messages the broker cannot read, plus opt-in plaintext topics. The design is in
+> [`docs/DESIGN-M1.md`](docs/DESIGN-M1.md). Not yet packaged for release (no
+> tagged version, `.deb`, or hosted offering yet). Start with [`GOAL.md`](GOAL.md)
+> for the canonical endgoal.
+
+## Quickstart
+
+Build and run (a single Go binary; toolchain stays in the dev container under
+`.claude-dev/`):
+
+```
+go build -o doublethink ./cmd/doublethink
+
+# Stand it up: channels on :8080, loopback admin/pairing on :8081.
+./doublethink serve
+
+# Create a private channel (unguessable id), then pair two peers.
+./doublethink channel create --prefix codespeak --quiet
+./doublethink pair --channel <id> --identity agent.json
+./doublethink pair --channel <id> --identity pwa.json
+```
+
+Each peer holds its own private identity locally; the server stores only public
+keys and never sees a private-channel payload in plaintext. Plaintext public
+topics work ntfy-style for those who want them:
+
+```
+curl -d "hello" http://localhost:8080/publish/mytopic
+curl -sN http://localhost:8080/subscribe/mytopic   # Server-Sent Events stream
+```
+
+The public path refuses any name registered as a private channel, so a private
+channel can never be reached through the open path. See
+[`docs/DESIGN-M1.md`](docs/DESIGN-M1.md) for the crypto and threat model.
 
 ## Security is the point, not a feature
 

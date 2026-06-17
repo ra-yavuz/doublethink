@@ -42,11 +42,18 @@ These are the load-bearing security decisions. Each must be chosen deliberately
 in the design phase and documented; none may be settled by accident or by
 copying a snippet:
 
-- **End-to-end vs in-transit.** Are private-channel payloads end-to-end
-  encrypted between the authorised peers (broker never sees plaintext), or
-  TLS-protected in transit with the broker able to read plaintext? CodeSpeak
-  carries code context and shell commands over this channel, so this choice has
-  real consequences and must be stated explicitly to users.
+- **End-to-end vs in-transit. DECIDED (2026-06-17): end-to-end.** Private-channel
+  payloads are end-to-end encrypted between the authorised peers; the broker never
+  sees plaintext. This was settled deliberately, not defaulted: the prior-art
+  survey ([`RESEARCH.md`](RESEARCH.md)) showed that a TLS-in-transit-only broker
+  has no differentiation (NATS, EMQX, and RabbitMQ already do that, better), so
+  broker-blind confidentiality is doublethink's reason to exist. The mechanism is
+  in [`DESIGN-M1.md`](DESIGN-M1.md) decision 4 (X25519 ECDH, HKDF bound to both
+  peers' keys, per-direction secretbox). Honest scope of the guarantee: the broker
+  is **payload-blind**, not metadata-blind. It still sees the channel id and the
+  envelope's `type`, `id`, and `ts` (it routes on these) plus ciphertext sizes and
+  timing. M1 uses a static channel key, so there is no forward secrecy yet; that
+  is a documented limitation and a named follow-up, not a silent gap.
 - **Authentication and key exchange mechanism.** How a party proves identity and
   how channel keys are established. Must interoperate with CodeSpeak's Device ID
   / Session Token / public-private key-pair pairing (see
