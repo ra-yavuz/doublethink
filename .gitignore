@@ -1,0 +1,36 @@
+# Debian build artifacts
+*.deb
+*.buildinfo
+*.changes
+*.dsc
+*.tar.*
+debian/.debhelper/
+debian/files
+debian/doublethink/
+debian/doublethink.substvars
+debian/debhelper-build-stamp
+
+# Editor / OS
+*~
+*.swp
+.DS_Store
+
+# Local
+build/
+dist/
+
+# Secrets / local config (never commit)
+*.key
+*.pem
+.env
+.env.*
+!.env.example
+
+# Shell / tooling state that lands in the working dir
+.bash_history
+.claude/
+
+# Go build output
+/doublethink
+*.test
+*.out
