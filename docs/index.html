@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>doublethink: ntfy-easy pub/sub with genuinely private, end-to-end-encrypted channels</title>
+<meta name="description" content="doublethink is a small open-source, self-hosted publish/subscribe message broker by Ramazan Yavuz. As easy to stand up as ntfy, but with real authentication and genuinely private channels: private-channel payloads are end-to-end encrypted so the broker operator never sees plaintext. Runs in Docker or as a single native binary. Opt-in plaintext public topics too.">
+<meta name="author" content="Ramazan Yavuz">
+<meta name="keywords" content="doublethink, ntfy alternative, private pub/sub, end-to-end encrypted broker, self-hosted message broker, authenticated channels, ntfy with auth, websocket broker, secure pubsub, broker-blind encryption, ed25519 challenge, x25519 secretbox">
+<meta name="robots" content="index,follow">
+<link rel="canonical" href="https://ra-yavuz.github.io/doublethink/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="doublethink: ntfy-easy pub/sub with genuinely private, end-to-end-encrypted channels">
+<meta property="og:description" content="As easy to stand up as ntfy, but with real authentication and private channels the broker operator cannot read. Self-hosted, Docker or native.">
+<meta property="og:url" content="https://ra-yavuz.github.io/doublethink/">
+<meta property="og:site_name" content="ra-yavuz">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="doublethink: ntfy-easy pub/sub with genuinely private channels">
+<meta name="twitter:description" content="ntfy's ease, plus authentication and end-to-end-encrypted private channels. Self-hosted, Docker or native.">
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --muted: #5e5e5e;
+    --bg: #f4f1ec;
+    --card: #ffffff;
+    --line: #d8d4cc;
+    --code-bg: #ebe7e0;
+    --link: #0a4ca8;
+    --apt-bg: #eef2f8;
+    --warn-bg: #fff7d6;
+    --warn-fg: #5a4500;
+    --warn-line: #e8d36b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #ececec;
+      --muted: #9a9a9a;
+      --bg: #1c1d20;
+      --card: #25272b;
+      --line: #353941;
+      --code-bg: #14151a;
+      --link: #7cb0ff;
+      --apt-bg: #1f242d;
+      --warn-bg: #3a2e00;
+      --warn-fg: #f6e2a4;
+      --warn-line: #6a5500;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { overflow-x: hidden; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--fg); background: var(--bg);
+    line-height: 1.55;
+    overflow-wrap: break-word;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 24px 96px; }
+  @media (max-width: 540px) {
+    main { padding: 28px 16px 64px; }
+  }
+  .crumb { font-size: 0.86rem; color: var(--muted); margin: 0 0 18px; }
+  .brand {
+    position: fixed; top: 20px; right: 24px;
+    width: 110px; height: 110px;
+    object-fit: contain; object-position: top right;
+    pointer-events: none; z-index: 10;
+  }
+  @media (prefers-color-scheme: dark) { .brand { filter: invert(1); } }
+  @media (max-width: 720px) { .brand { width: 76px; height: 76px; top: 12px; right: 12px; } }
+  @media (max-width: 480px) { .brand { display: none; } }
+  h1 { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.7rem; margin: 0 0 6px; letter-spacing: -0.005em; }
+  p.tag { color: var(--muted); margin: 0 0 18px; font-size: 1rem; max-width: 60ch; }
+  h2 {
+    font-size: 1rem; margin: 36px 0 10px;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600;
+  }
+  a { color: var(--link); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    background: var(--code-bg); padding: 1px 5px; border-radius: 3px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.9em;
+  }
+  pre {
+    background: var(--code-bg); padding: 12px 14px; border-radius: 6px;
+    border: 1px solid var(--line); overflow-x: auto;
+    font-size: 0.86rem; line-height: 1.55; margin: 0;
+  }
+  pre code { background: transparent; padding: 0; }
+  .links-row a { margin-right: 14px; font-size: 0.95rem; }
+  .warn {
+    background: var(--warn-bg); color: var(--warn-fg);
+    border-left: 4px solid var(--warn-line);
+    padding: 12px 16px; border-radius: 4px;
+    font-size: 0.9rem; margin: 12px 0 0;
+  }
+  table.matrix { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+  table.matrix th, table.matrix td {
+    text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  table.matrix th { color: var(--muted); font-weight: 600; }
+  footer {
+    margin-top: 56px; color: var(--muted); font-size: 0.85rem;
+    border-top: 1px solid var(--line); padding-top: 14px;
+  }
+</style>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "doublethink",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Linux, macOS, Windows (Docker or native)",
+  "description": "A self-hosted publish/subscribe message broker that is as easy to stand up as ntfy, but with real authentication and genuinely private channels. Private-channel payloads are end-to-end encrypted so the broker operator never sees plaintext. Opt-in plaintext public topics too.",
+  "url": "https://ra-yavuz.github.io/doublethink/",
+  "downloadUrl": "https://github.com/ra-yavuz/doublethink/releases",
+  "softwareVersion": "0.1.0",
+  "license": "https://opensource.org/licenses/MIT",
+  "author": {
+    "@type": "Person",
+    "name": "Ramazan Yavuz",
+    "url": "https://ra-yavuz.github.io/"
+  },
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  }
+}
+</script>
+</head>
+<body>
+<main>
+  <p class="crumb">
+    <a href="https://ra-yavuz.github.io/">ra-yavuz</a> &rsaquo; doublethink
+  </p>
+
+  <picture><source srcset="logo.webp" type="image/webp"><img class="brand" src="logo.png" alt="doublethink logo"></picture>
+  <h1>doublethink</h1>
+  <p class="tag">
+    A publish/subscribe message broker that is as easy to stand up as
+    <a href="https://ntfy.sh">ntfy</a>, but that you can actually trust with
+    private data. ntfy is effortless because its topic name is the only gate,
+    which is exactly why its topics are effectively public. doublethink keeps the
+    minutes-to-set-up ergonomics and adds the thing ntfy omits: identity,
+    authentication, and genuinely private channels.
+  </p>
+  <p class="tag">
+    A private channel admits only authenticated, authorised parties, and its
+    payloads are <strong>end-to-end encrypted between the paired peers</strong>:
+    the broker operator never sees the plaintext. Knowing a channel's name grants
+    no access. Plaintext public topics are available too, opt-in, for ntfy-style
+    open use.
+  </p>
+
+  <div class="links-row">
+    <a href="https://github.com/ra-yavuz/doublethink">source</a>
+    <a href="https://github.com/ra-yavuz/doublethink/releases">releases</a>
+    <a href="#run">run it</a>
+    <a href="https://github.com/ra-yavuz/doublethink/issues">issues</a>
+  </div>
+
+  <h2>What makes it private</h2>
+  <table class="matrix">
+    <tr><th>Property</th><th>How</th></tr>
+    <tr><td>Authentication</td><td>Each party holds an Ed25519 device key; it attaches by signing a fresh server challenge. No reusable bearer token. Unauthenticated access is rejected outright.</td></tr>
+    <tr><td>Per-channel authorisation</td><td>A key authorised for one channel reaches nothing else. Knowing a channel name grants no access; the broker leaks nothing about whether a private channel exists.</td></tr>
+    <tr><td>End-to-end encryption</td><td>Paired peers derive a shared key by X25519 ECDH (bound to both their keys); payloads are sealed per direction with NaCl secretbox. The broker forwards ciphertext it cannot read.</td></tr>
+    <tr><td>MITM-resistant pairing</td><td>Single-use, short-lived invite codes plus a short authentication string (SAS) both sides compare out of band before a peer is admitted. A substituted key changes the SAS.</td></tr>
+    <tr><td>Streaming, full-duplex</td><td>Either peer sends at any time; many messages stream over one channel; a barge-in control message is never stuck behind a peer's stream.</td></tr>
+  </table>
+
+  <h2 id="run">Run it</h2>
+  <p>Cross-platform: Docker or a single native binary. Pick one.</p>
+<pre><code># Docker, serve from a checkout (no image build):
+docker compose up
+
+# Docker, prebuilt self-contained image (distroless):
+docker compose -f docker-compose.build.yml up --build
+
+# Or a single native binary:
+go build -o doublethink ./cmd/doublethink
+./doublethink serve</code></pre>
+  <p>
+    Channels listen on <code>:8080</code>. The admin/pairing API binds to
+    <code>127.0.0.1:8081</code> (loopback only; never expose it off-host).
+  </p>
+
+  <h2>Create a private channel and pair two peers</h2>
+<pre><code># Peer A creates the channel (and is enrolled):
+doublethink channel create --prefix codespeak --identity agent.json
+
+# Peer A mints a single-use invite for peer B:
+doublethink invite --identity agent.json
+
+# Peer B redeems it; this prints a SAS but does NOT yet admit peer B:
+doublethink pair --channel &lt;id&gt; --code &lt;code&gt; --identity pwa.json
+
+# Compare the SAS shown on both sides. If they match, admit peer B:
+doublethink confirm --sas &lt;sas&gt;</code></pre>
+  <p>
+    Each peer keeps its own private identity locally; the broker stores only
+    public keys and never the channel key. Plaintext public topics work
+    ntfy-style:
+  </p>
+<pre><code>curl -d "hello" http://localhost:8080/publish/mytopic
+curl -sN http://localhost:8080/subscribe/mytopic   # Server-Sent Events stream</code></pre>
+
+  <h2>The honest limits</h2>
+  <p>
+    The broker is <strong>payload-blind, not metadata-blind</strong>: it routes on
+    the channel id and the message type, id, and timestamp, and it sees ciphertext
+    sizes and timing. This release uses a static channel key per pairing, so it
+    does not yet provide forward secrecy, and it offers at-most-once online
+    delivery with no retention for a peer that was offline. These are deliberate,
+    documented scope limits, not accidents; see the
+    <a href="https://github.com/ra-yavuz/doublethink/blob/main/docs/SECURITY.md">security doc</a>
+    and <a href="https://github.com/ra-yavuz/doublethink/blob/main/docs/DESIGN-M1.md">design</a>.
+  </p>
+
+  <div class="warn">
+    <strong>Disclaimer:</strong> doublethink is provided AS IS, WITHOUT WARRANTY
+    OF ANY KIND. By design it carries other parties' private traffic and enforces
+    access to it. <strong>You alone are responsible for how you deploy and secure
+    it, for the data that flows through it, and for the consequences of any
+    misconfiguration.</strong> The author and contributors are not liable for any
+    harm, data loss, data exposure, or security incident, however caused. No
+    security mechanism is perfect; evaluate whether it meets your own requirements
+    before trusting it with sensitive traffic. By installing or running this
+    software you accept these terms. See
+    <a href="https://github.com/ra-yavuz/doublethink/blob/main/README.md#disclaimer--no-warranty">README</a>
+    for the full text.
+  </div>
+
+  <footer>
+    <p>
+      doublethink is open source software by
+      <a href="https://ramazan-yavuz.tr">Ramazan Yavuz</a>, MIT licensed.
+      Source on <a href="https://github.com/ra-yavuz/doublethink">GitHub</a>.
+    </p>
+    <p style="font-size:0.78rem;opacity:0.7;margin-top:14px;line-height:1.6;">
+      This page does not use cookies, tracking, or analytics. Outbound links lead to third-party websites outside our control; we are not liable for their content or privacy practices.
+    </p>
+  </footer>
+</main>
+</body>
+</html>
