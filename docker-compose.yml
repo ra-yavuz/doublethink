@@ -1,0 +1,43 @@
+# Default compose: run doublethink from the MOUNTED source tree, no image build.
+# This is the develop-and-serve path: edit the code here, the container runs it
+# straight from /src via `go run`. Good for hacking on the broker and for a quick
+# stand-up without producing an image.
+#
+# For a self-contained, prebuilt image instead, use docker-compose.build.yml.
+#
+#   docker compose up          # serve from this checkout
+#   docker compose exec doublethink doublethink-admin ...   # see note below
+#
+# Admin/pairing runs on loopback inside the container (127.0.0.1:8081) and is NOT
+# published, by design (it is the unauthenticated control surface). To pair, run
+# the doublethink CLI from inside the container's network namespace, e.g.:
+#   docker compose exec doublethink go run ./cmd/doublethink channel create --identity /data/agent.json --quiet
+#
+# NO WARRANTY: doublethink carries other parties' private traffic and enforces
+# access to it. It is provided as is; you are responsible for deployment and
+# security. The author is not liable for any harm, however caused.
+
+services:
+  doublethink:
+    image: golang:1.25-bookworm
+    working_dir: /src
+    # Run the broker from the mounted source. The module cache lives in named
+    # volumes so it is not re-resolved on every up.
+    command: >
+      go run ./cmd/doublethink serve
+      --addr :8080
+      --admin-addr 127.0.0.1:8081
+      --state /data/state.json
+    ports:
+      - "8080:8080" # channels (public); admin 8081 is intentionally NOT published
+    volumes:
+      - .:/src
+      - doublethink-data:/data
+      - doublethink-go-build:/root/.cache/go-build
+      - doublethink-go-mod:/go/pkg/mod
+    restart: unless-stopped
+
+volumes:
+  doublethink-data:
+  doublethink-go-build:
+  doublethink-go-mod:

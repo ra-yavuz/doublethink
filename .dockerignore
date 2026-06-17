@@ -1,0 +1,12 @@
+.git
+dist
+build
+*.deb
+.claude-dev
+.claude
+# Peer identity files hold private keys; never bake them into an image.
+*-identity.json
+agent.json
+pwa.json
+*.key
+*.pem

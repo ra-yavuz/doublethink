@@ -18,24 +18,45 @@ channels you can trust with real traffic.
 
 ## Quickstart
 
-Build and run (a single Go binary; toolchain stays in the dev container under
-`.claude-dev/`):
+Stand it up. Pick one:
 
 ```
+# Docker, serve from this checkout (no image build):
+docker compose up
+
+# Docker, prebuilt self-contained image (distroless):
+docker compose -f docker-compose.build.yml up --build
+
+# Or a single Go binary (toolchain stays in the dev container under .claude-dev/):
 go build -o doublethink ./cmd/doublethink
-
-# Stand it up: channels on :8080, loopback admin/pairing on :8081.
 ./doublethink serve
+```
 
-# Create a private channel (unguessable id), then pair two peers.
-./doublethink channel create --prefix codespeak --quiet
-./doublethink pair --channel <id> --identity agent.json
-./doublethink pair --channel <id> --identity pwa.json
+The broker listens on `:8080` (channels) with the admin/pairing API on
+`127.0.0.1:8081` (loopback only; never expose it off-host).
+
+Create a private channel and pair two peers. Pairing is man-in-the-middle
+resistant: a single-use invite code, then a short authentication string (SAS) both
+sides compare out of band before the second peer is admitted.
+
+```
+# Peer A creates the channel (and is enrolled):
+./doublethink channel create --prefix codespeak --identity agent.json
+
+# Peer A mints a single-use invite for peer B:
+./doublethink invite --identity agent.json
+
+# Peer B redeems it; this prints a SAS but does NOT yet admit peer B:
+./doublethink pair --channel <id> --code <code> --identity pwa.json
+
+# Compare the SAS shown on both sides. If they match, admit peer B:
+./doublethink confirm --sas <sas>
 ```
 
 Each peer holds its own private identity locally; the server stores only public
-keys and never sees a private-channel payload in plaintext. Plaintext public
-topics work ntfy-style for those who want them:
+keys and never sees a private-channel payload in plaintext (the payload is
+end-to-end encrypted between the paired peers). Plaintext public topics work
+ntfy-style for those who want them:
 
 ```
 curl -d "hello" http://localhost:8080/publish/mytopic
@@ -43,7 +64,8 @@ curl -sN http://localhost:8080/subscribe/mytopic   # Server-Sent Events stream
 ```
 
 The public path refuses any name registered as a private channel, so a private
-channel can never be reached through the open path. See
+channel can never be reached through the open path. Install options also include a
+`.deb` (see `scripts/build-deb.sh`) with a hardened systemd unit. See
 [`docs/DESIGN-M1.md`](docs/DESIGN-M1.md) for the crypto and threat model.
 
 ## Security is the point, not a feature

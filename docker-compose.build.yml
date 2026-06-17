@@ -1,0 +1,30 @@
+# Build compose: build the production image from the Dockerfile (multi-stage,
+# static binary on distroless) and run that, instead of serving from mounted
+# source. This is the closer-to-production path: a self-contained image with no Go
+# toolchain or source tree at runtime.
+#
+#   docker compose -f docker-compose.build.yml up --build
+#
+# To pair against this broker, run the doublethink CLI from a host build or the
+# dev container pointed at the published admin port. The admin/pairing API is NOT
+# published here (loopback only inside the container) for the same reason as the
+# mount variant: it is the unauthenticated control surface and must stay on-host.
+#
+# NO WARRANTY: doublethink carries other parties' private traffic and enforces
+# access to it. It is provided as is; you are responsible for deployment and
+# security. The author is not liable for any harm, however caused.
+
+services:
+  doublethink:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: doublethink:local
+    ports:
+      - "8080:8080" # channels (public); admin 8081 is intentionally NOT published
+    volumes:
+      - doublethink-data:/data
+    restart: unless-stopped
+
+volumes:
+  doublethink-data:
