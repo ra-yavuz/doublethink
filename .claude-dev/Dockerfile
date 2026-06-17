@@ -1,6 +1,6 @@
 # Dev container for doublethink. Toolchain lives here, never on the host.
-# Go 1.24 matches the go.mod toolchain floor.
-FROM golang:1.24-bookworm
+# Go 1.25 matches the go.mod floor (x/crypto v0.53+ requires go >= 1.25).
+FROM golang:1.25-bookworm
 
 # git + ca-certificates for module fetches and any repo-touching tests.
 RUN apt-get update \
