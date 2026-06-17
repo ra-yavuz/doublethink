@@ -40,8 +40,14 @@ func DefaultLimits() Defaults {
 		BytesPerChannel:      32 * 1024 * 1024,
 		BytesPerAccount:      256 * 1024 * 1024,
 		ChannelsPerAccount:   100,
-		CreatePerIPPerHour:   10,
-		ConnectionsPerIP:     20,
+		// Channel creation: generous enough for a public instance that hosts a
+		// click-to-run demo and serves browsers/PWAs behind shared NAT IPs. Abuse
+		// is bounded by the connection cap, message-size cap, and per-account
+		// storage quotas, not by a draconian create rate. A tight 10/hour would
+		// rate-limit honest reconnects and repeated demo runs (especially when many
+		// users share one IP), so the bucket is larger with a bigger burst.
+		CreatePerIPPerHour:   120,
+		ConnectionsPerIP:     40,
 		PublishPerChanPerMin: 60,
 		PublishPerAcctPerMin: 600,
 	}

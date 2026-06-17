@@ -72,7 +72,8 @@ async function runDemo() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ channel, auth_key: registrationKey(secret), retain: false }),
     });
-    if (!createResp.ok) throw new Error("channel create failed (" + createResp.status + ", likely rate-limited; try again shortly)");
+    if (createResp.status === 429) throw new Error("the public demo broker is busy (rate limit shared across visitors); wait a minute and try again. This is the abuse control working, not a fault in your request.");
+    if (!createResp.ok) throw new Error("channel create failed (HTTP " + createResp.status + ")");
     step("2. ephemeral channel created on the live broker", esc(channel));
 
     // 2. both parties attach with the secret.

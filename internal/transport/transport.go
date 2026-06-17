@@ -89,7 +89,7 @@ func NewWithConfig(cfg Config) *Server {
 		lim:       cfg.Limits,
 		allowed:   cfg.AllowedOrigins,
 		mux:       http.NewServeMux(),
-		createLim: limits.NewPerHour(cfg.Limits.CreatePerIPPerHour, 3),
+		createLim: limits.NewPerHour(cfg.Limits.CreatePerIPPerHour, 15),
 		pubChan:   limits.NewPerMinute(cfg.Limits.PublishPerChanPerMin, 20),
 		conns:     limits.NewConnCounter(cfg.Limits.ConnectionsPerIP),
 	}
