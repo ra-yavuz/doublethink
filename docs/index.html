@@ -290,6 +290,19 @@ doublethink channel create --channel perm/team-debug --ticket &lt;ticket&gt;
     and the grant flow are in the
     <a href="https://github.com/ra-yavuz/doublethink/blob/main/docs/ADMIN.md">admin reference</a>.
   </p>
+  <p>
+    The grant says nothing about encryption; <strong>you</strong> choose at redeem
+    time. Redeem with a secret and you get the end-to-end-encrypted channel above.
+    Redeem without one and you get a <strong>plaintext</strong> permanent topic
+    reachable on the open ntfy-style path with no key: anyone can
+    <code>POST /publish/&lt;topic&gt;</code> and <code>GET /subscribe/&lt;topic&gt;</code>,
+    and a fresh visitor catches up on the whole backlog. That is exactly what a
+    public <strong>guestbook</strong> wants, where end-to-end encryption would add
+    key management for no benefit (everyone can read it anyway). A plaintext topic
+    deliberately drops the "operator cannot read it" property for that topic, which
+    is the right trade for public data and is documented as a visible choice, not a
+    default.
+  </p>
 
   <h2>The honest limits</h2>
   <p>
