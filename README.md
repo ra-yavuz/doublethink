@@ -196,7 +196,7 @@ it; if you need guarantees, **self-host** (that is what the single-binary design
 is for). Use of the public instance is subject to an acceptable-use policy (no
 illegal use), an abuse/takedown process keyed on channel id, and a GDPR-safe
 stats posture. All of that is in [`docs/LEGAL.md`](docs/LEGAL.md); the abuse
-contact is `abuse@caleidoscode.io`.
+contact is `yavuzramazan1994@gmail.com`.
 
 Full legal license: see [`LICENSE`](LICENSE) (MIT).
 

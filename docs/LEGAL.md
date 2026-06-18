@@ -85,7 +85,7 @@ instance and does not select or modify the content carried over private channels
 If you believe the public instance is being used for illegal activity or in
 violation of the acceptable-use terms above, report it:
 
-> **Abuse contact:** abuse@caleidoscode.io
+> **Abuse contact:** yavuzramazan1994@gmail.com
 
 Because payloads are end-to-end encrypted, the operator cannot read message
 content and therefore acts on **channel identifiers and metadata**, not on
