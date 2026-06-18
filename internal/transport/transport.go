@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -107,7 +108,41 @@ func NewWithConfig(cfg Config) *Server {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	// Catch-all root. doublethink is a machine API, not a website; a human poking
+	// the host at "/" (or any unrouted path) gets a rotating brush-off instead of a
+	// bare 404. This only matches paths NOT served by the explicit routes above
+	// (Go's ServeMux gives the longest registered prefix precedence), so real API
+	// clients are untouched.
+	s.mux.HandleFunc("/", s.handleRoot)
 	return s
+}
+
+// rootBrushoffs is the rotating message set served at unrouted paths. Light, not
+// hostile: doublethink is a broker, not a site, and a curious visitor is not an
+// attacker. Vary the line per request so it is clearly "nothing for you here".
+var rootBrushoffs = []string{
+	"Nothing to see here. doublethink is a machine API, not a website. Please go away.",
+	"This is a message broker, not a web page. There is nothing here for a browser.",
+	"You found the API. There is no front door. Move along.",
+	"Go away. (Politely.) doublethink talks to programs, not people.",
+	"No page here. If you were looking for the project, try the docs on GitHub.",
+	"This endpoint speaks JSON and WebSockets, not HTML. Nothing for you to read.",
+	"Shoo. This host carries other people's private traffic; it is not a destination.",
+	"Wrong door. doublethink is plumbing, not a place to visit.",
+}
+
+var rootHits atomic.Uint64
+
+// handleRoot serves the rotating brush-off at "/" and any unrouted path. It never
+// touches the real API routes (those are registered explicitly and win). Returns
+// 404 so crawlers and scanners treat it as "no content here", with a human-readable
+// body that rotates per request.
+func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	msg := rootBrushoffs[int(rootHits.Add(1)-1)%len(rootBrushoffs)]
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte(msg + "\n"))
 }
 
 // requireAdmin checks the admin Bearer key; writes 404 (no admin surface) when

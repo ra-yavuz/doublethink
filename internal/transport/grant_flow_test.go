@@ -219,6 +219,53 @@ func TestKeylessCreateWithoutTicketRejected(t *testing.T) {
 	}
 }
 
+// The root path (and any unrouted path) serves a rotating human brush-off, and
+// the message varies across requests. Real API routes are unaffected.
+func TestRootBrushoff(t *testing.T) {
+	httpURL, _, _, _ := retentionServer(t)
+
+	seen := map[string]bool{}
+	for i := 0; i < 8; i++ {
+		resp, err := http.Get(httpURL + "/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		b := new(bytes.Buffer)
+		b.ReadFrom(resp.Body)
+		resp.Body.Close()
+		body := strings.TrimSpace(b.String())
+		if body == "ok" || body == "404 page not found" {
+			t.Fatalf("root served the bare default %q, want a brush-off message", body)
+		}
+		if body == "" {
+			t.Fatal("root served an empty body")
+		}
+		seen[body] = true
+	}
+	// Over several hits we should see more than one distinct message (it rotates).
+	if len(seen) < 2 {
+		t.Fatalf("root message did not vary across requests; saw only %d distinct", len(seen))
+	}
+
+	// An arbitrary unrouted path also gets a brush-off, not a bare 404.
+	r2, _ := http.Get(httpURL + "/favicon.ico")
+	b2 := new(bytes.Buffer)
+	b2.ReadFrom(r2.Body)
+	r2.Body.Close()
+	if strings.TrimSpace(b2.String()) == "404 page not found" {
+		t.Fatal("unrouted path served the bare default 404")
+	}
+
+	// /healthz is untouched: still plain "ok" with 200.
+	h, _ := http.Get(httpURL + "/healthz")
+	hb := new(bytes.Buffer)
+	hb.ReadFrom(h.Body)
+	h.Body.Close()
+	if h.StatusCode != 200 || strings.TrimSpace(hb.String()) != "ok" {
+		t.Fatalf("/healthz = %d %q, want 200 \"ok\" (must stay a clean health probe)", h.StatusCode, hb.String())
+	}
+}
+
 // Public /stats serves aggregate counters and never leaks channel ids or secrets.
 func TestPublicStats(t *testing.T) {
 	httpURL, _, _, _ := retentionServer(t)
