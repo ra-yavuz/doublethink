@@ -102,6 +102,123 @@ func TestAdminGrantPermanentTopicFlow(t *testing.T) {
 	}
 }
 
+// A grant lets the USER choose plaintext: a keyless ticketed create makes a
+// PERMANENT plaintext topic reachable on the open /publish + /subscribe path, with
+// retention (a later subscriber catches up on the backlog). No E2E, by the user's
+// choice; the broker stores readable text.
+func TestGrantPlaintextRetainedTopicFlow(t *testing.T) {
+	httpURL, _, st, _ := retentionServer(t)
+
+	const topic = "ring/guestbook-1"
+	// 1. admin grants the (encryption-agnostic) permanent capped slot.
+	grantBody, _ := json.Marshal(map[string]any{
+		"channel_match": topic, "ttl_sec": 0, "max_bytes": 0, "max_msgs": 0, "expiry_sec": 600,
+	})
+	greq, _ := http.NewRequest("POST", httpURL+"/admin/grant", bytes.NewReader(grantBody))
+	greq.Header.Set("Authorization", "Bearer "+adminKey)
+	gresp, err := http.DefaultClient.Do(greq)
+	if err != nil || gresp.StatusCode != 200 {
+		t.Fatalf("grant: %v status %v", err, gresp.StatusCode)
+	}
+	var gout struct {
+		Ticket string `json:"ticket"`
+	}
+	json.NewDecoder(gresp.Body).Decode(&gout)
+	gresp.Body.Close()
+
+	// 2. user redeems WITHOUT an auth_key -> plaintext topic (user's choice).
+	cbody, _ := json.Marshal(map[string]any{"channel": topic, "ticket": gout.Ticket}) // no auth_key
+	cresp, err := http.Post(httpURL+"/channel", "application/json", bytes.NewReader(cbody))
+	if err != nil || cresp.StatusCode != 200 {
+		b, _ := io_ReadAll(cresp)
+		t.Fatalf("plaintext ticketed create: %v status %v body %s", err, cresp.StatusCode, b)
+	}
+	var cout struct {
+		Encrypted bool `json:"encrypted"`
+		Retained  bool `json:"retained"`
+	}
+	json.NewDecoder(cresp.Body).Decode(&cout)
+	cresp.Body.Close()
+	if cout.Encrypted || !cout.Retained {
+		t.Fatalf("plaintext create response = %+v, want encrypted=false retained=true", cout)
+	}
+
+	// stored channel has empty k_auth and is retained + permanent.
+	ch, err := st.GetChannel(topic)
+	if err != nil || ch.KAuth != "" || !ch.Retained || ch.TTLSeconds != 0 {
+		t.Fatalf("plaintext channel = %+v %v (want empty k_auth, retained, ttl0)", ch, err)
+	}
+
+	// 3. publish two entries on the OPEN path (no key, ntfy-style). They persist.
+	for _, msg := range []string{"first guest", "second guest"} {
+		pr, perr := http.Post(httpURL+"/publish/"+topic, "text/plain", strings.NewReader(msg))
+		if perr != nil || pr.StatusCode != 200 {
+			t.Fatalf("publish %q: %v status %v", msg, perr, pr.StatusCode)
+		}
+		var pout struct {
+			Retained bool `json:"retained"`
+		}
+		json.NewDecoder(pr.Body).Decode(&pout)
+		pr.Body.Close()
+		if !pout.Retained {
+			t.Fatalf("publish of %q reported retained=false on a retained topic", msg)
+		}
+	}
+
+	// 4. a FRESH subscriber catches up on both entries from the backlog (proves
+	// retention + open-path reachability). Read the SSE stream briefly.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sreq, _ := http.NewRequestWithContext(ctx, "GET", httpURL+"/subscribe/"+topic, nil)
+	sresp, err := http.DefaultClient.Do(sreq)
+	if err != nil || sresp.StatusCode != 200 {
+		t.Fatalf("subscribe: %v status %v", err, sresp.StatusCode)
+	}
+	defer sresp.Body.Close()
+	// Read the stream on a goroutine; ctx (5s) closes the body to unblock us.
+	gotCh := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		acc := ""
+		for {
+			n, rerr := sresp.Body.Read(buf)
+			acc += string(buf[:n])
+			if strings.Contains(acc, "first guest") && strings.Contains(acc, "second guest") {
+				gotCh <- acc
+				return
+			}
+			if rerr != nil {
+				gotCh <- acc
+				return
+			}
+		}
+	}()
+	var got string
+	select {
+	case got = <-gotCh:
+	case <-ctx.Done():
+		got = "<timeout>"
+	}
+	if !strings.Contains(got, "first guest") || !strings.Contains(got, "second guest") {
+		t.Fatalf("catch-up did not replay both entries; got:\n%s", got)
+	}
+}
+
+// A keyless create WITHOUT a ticket is rejected: only an admin grant authorizes a
+// plaintext topic, so the open retention path cannot be opened without one.
+func TestKeylessCreateWithoutTicketRejected(t *testing.T) {
+	httpURL, _, _, _ := retentionServer(t)
+	body, _ := json.Marshal(map[string]any{"channel": "ring/sneaky", "retain": true}) // no auth_key, no ticket
+	resp, err := http.Post(httpURL+"/channel", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("keyless no-ticket create = %d, want 400", resp.StatusCode)
+	}
+}
+
 // Public /stats serves aggregate counters and never leaks channel ids or secrets.
 func TestPublicStats(t *testing.T) {
 	httpURL, _, _, _ := retentionServer(t)

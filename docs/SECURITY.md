@@ -111,6 +111,16 @@ operator grant mechanism for permanent channels. The security-relevant points:
   evicted (ring buffer) or deleted, and counts to quota. It is stored as
   ciphertext the broker cannot read. Treat it, and the metadata around it,
   accordingly.
+- **Plaintext retained topics waive broker-blindness, by the user's choice.** A
+  grant authorizes a permanent capped slot; the user decides at redeem time whether
+  it is end-to-end encrypted (send an `auth_key`) or **plaintext** (send none). A
+  plaintext topic is stored readable and served on the open `/publish` +
+  `/subscribe` path with no key, for inherently public data (a guestbook, a public
+  feed). For such a topic the operator CAN read the contents: that is the deliberate
+  trade for public data, not a defect, and it is the one case where the
+  "broker cannot read your data" property does not hold. A keyless topic is only
+  ever created through a valid admin grant; the open retention path cannot be opened
+  without one.
 - **Durability is bounded, not absolute.** Retained data lives in Redis with
   periodic (about once-a-second) persistence. A clean shutdown loses nothing; a
   hard crash can lose up to roughly the last second of writes. "Permanent" means

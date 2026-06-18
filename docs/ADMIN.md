@@ -168,6 +168,42 @@ If `channel_match` was a namespace (`perm/*`), the user picks any id under it
 caps the admin set in the grant. Optionally the user can also pass an account
 key, which attributes ownership of the channel to that account.
 
+### Encrypted or plaintext is the USER's choice, not the admin's
+
+A grant authorizes a permanent, capped, retained slot. It says nothing about
+encryption. When the user redeems the ticket, *they* decide what kind of topic to
+create, by whether they send an `auth_key`:
+
+- **With `auth_key` -> end-to-end-encrypted channel.** The user holds a secret;
+  the broker stores only `K_auth` and relays ciphertext it cannot read. Used over
+  `/ws` with the secret challenge. This is the default and the privacy-preserving
+  choice.
+- **Without `auth_key` -> plaintext retained topic.** The broker stores readable
+  text and the topic is reachable on the open, ntfy-style path: anyone can
+  `POST /publish/<topic>` and `GET /subscribe/<topic>` (SSE), with no key. A fresh
+  subscriber catches up on the stored backlog; `?after=<seq>` resumes from a
+  cursor. This is right for inherently public data (a guestbook, a public
+  announcement feed) where end-to-end encryption would add key-management overhead
+  for no benefit.
+
+```
+# encrypted permanent channel (user holds a secret):
+POST /channel { "channel": "ring/x", "auth_key": "<HKDF(secret,auth)>", "ticket": "<ticket>" }
+
+# plaintext permanent topic (public guestbook-style, no key):
+POST /channel { "channel": "ring/guestbook", "ticket": "<ticket>" }     # note: no auth_key
+# then, with no key, ntfy-style:
+curl -d "hi from a guest" https://<host>/publish/ring/guestbook
+curl -sN https://<host>/subscribe/ring/guestbook                       # SSE: backlog then live
+```
+
+**Trust note for plaintext topics.** A plaintext retained topic deliberately
+waives doublethink's "the broker cannot read your data" property *for that topic*:
+the operator stores and can read its contents. That is the correct trade for
+public data, but it is a real difference from an encrypted channel and is stated
+here, not hidden. A keyless create is only accepted with a valid grant ticket; you
+cannot open a retained plaintext topic on the open path without an admin grant.
+
 ### Full grant flow
 
 ```

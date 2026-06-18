@@ -28,6 +28,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -313,15 +314,26 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	authKey, err := clientcrypto.DecodeAuthKey(req.AuthKey)
-	if err != nil {
-		http.Error(w, "bad auth key", http.StatusBadRequest)
-		return
+	// auth_key may be empty ONLY on the ticket path, where it selects a PLAINTEXT
+	// retained topic (no end-to-end encryption: the broker stores readable text and
+	// the topic is reached via the open /publish + /subscribe path, ntfy-style).
+	// Every other path requires a valid key. Decode only when one was supplied.
+	var authKey [clientcrypto.KeySize]byte
+	plaintext := req.AuthKey == ""
+	if !plaintext {
+		k, derr := clientcrypto.DecodeAuthKey(req.AuthKey)
+		if derr != nil {
+			http.Error(w, "bad auth key", http.StatusBadRequest)
+			return
+		}
+		authKey = k
 	}
 
 	// Grant ticket: an admin pre-authorized this channel with a policy (possibly
 	// permanent / uncapped). The user brings their own secret; the policy comes
 	// from the ticket, not from this request. The admin never saw the secret.
+	// The USER, not the admin, chooses encryption: supplying an auth_key makes an
+	// end-to-end-encrypted channel; omitting it makes a plaintext retained topic.
 	if req.Ticket != "" {
 		if s.store == nil {
 			http.Error(w, "retention not available on this instance", http.StatusNotImplemented)
@@ -330,6 +342,9 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		// A ticket may belong to an account holder or be anonymous; attribute to the
 		// account if one is presented, else leave unowned.
 		owner := s.authedAccount(r)
+		// For a plaintext topic the stored k_auth is empty: it carries no secret and
+		// is reachable on the open path. For an encrypted channel it is the client's
+		// K_auth and the channel is challenge-gated on /ws.
 		if err := s.store.CreateChannelWithTicket(req.Ticket, req.Channel, req.AuthKey, owner); err != nil {
 			switch {
 			case errors.Is(err, store.ErrExists):
@@ -341,9 +356,25 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		_ = s.reg.Register(req.Channel, authKey)
+		// Only an encrypted channel goes into the in-memory auth registry (which
+		// also blocks the open path for that id). A plaintext topic stays OUT of the
+		// registry so /publish + /subscribe can reach it with no key ceremony.
+		if !plaintext {
+			_ = s.reg.Register(req.Channel, authKey)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"channel": req.Channel, "created": true, "retained": true, "granted": true})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"channel": req.Channel, "created": true, "retained": true, "granted": true,
+			"encrypted": !plaintext,
+		})
+		return
+	}
+
+	// Past the ticket path, a key is mandatory: only an admin grant authorizes a
+	// plaintext (keyless) topic. A keyless non-ticket request is rejected so the
+	// open retention path cannot be opened without a grant.
+	if plaintext {
+		http.Error(w, "auth_key required (a plaintext topic needs an admin grant ticket)", http.StatusBadRequest)
 		return
 	}
 
@@ -774,8 +805,29 @@ func (s *Server) handlePublicPublish(w http.ResponseWriter, r *http.Request) {
 		TS:      time.Now().UTC().Format(time.RFC3339),
 	}
 	n := s.broker.Publish(e)
+
+	// If this topic is a registered RETAINED plaintext topic (created via an admin
+	// grant), persist the encoded envelope so a later subscriber can catch up. This
+	// only fires for topics explicitly registered as retained; ad-hoc open topics
+	// stay pure live fan-out (no storage, no abuse vector). The broker stores
+	// readable text here by design: a plaintext topic is not end-to-end encrypted.
+	retained := false
+	if s.store != nil && s.retained(topic) {
+		if raw, encErr := e.Encode(); encErr == nil {
+			if _, aerr := s.store.Append(topic, e.ID, string(e.Type), e.TS, raw, s.lim.BytesPerAccount); aerr != nil {
+				if errors.Is(aerr, store.ErrQuotaAcct) {
+					http.Error(w, "storage quota exceeded", http.StatusInsufficientStorage)
+					return
+				}
+				// a non-quota store error should not silently look like success
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			retained = true
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"delivered": n})
+	_ = json.NewEncoder(w).Encode(map[string]any{"delivered": n, "retained": retained})
 }
 
 func (s *Server) handlePublicSubscribe(w http.ResponseWriter, r *http.Request) {
@@ -794,8 +846,29 @@ func (s *Server) handlePublicSubscribe(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	// Subscribe to live BEFORE catch-up so nothing published in the gap is lost.
 	sub := s.broker.Subscribe(topic)
 	defer s.broker.Unsubscribe(sub)
+
+	// Catch-up: for a registered retained plaintext topic, replay stored history
+	// (seq > after) before live frames, so a fresh or reconnecting subscriber sees
+	// the backlog. `?after=<seq>` resumes from a cursor; absent or 0 = full history.
+	if s.store != nil && s.retained(topic) {
+		var after int64
+		if a := r.URL.Query().Get("after"); a != "" {
+			if v, perr := strconv.ParseInt(a, 10, 64); perr == nil && v > 0 {
+				after = v
+			}
+		}
+		if msgs, cuErr := s.store.CatchUp(topic, after, maxCatchUp); cuErr == nil {
+			for _, m := range msgs {
+				if _, werr := fmt.Fprintf(w, "id: %d\ndata: %s\n\n", m.Seq, m.Ciphertext); werr != nil {
+					return
+				}
+			}
+			flusher.Flush()
+		}
+	}
 
 	ctx := r.Context()
 	for {
