@@ -3,9 +3,10 @@
 FROM golang:1.25-bookworm
 
 # git + ca-certificates for module fetches and repo-touching tests; curl for the
-# smoke-test health checks.
+# smoke-test health checks; redis-server so the store tests can run against a real
+# local Redis (started per-test on an ephemeral port).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates curl \
+    && apt-get install -y --no-install-recommends git ca-certificates curl redis-server \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /work

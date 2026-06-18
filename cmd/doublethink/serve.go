@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -24,9 +23,8 @@ import (
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", ":8080", "listen address for the broker (channels, accounts, create, plaintext topics)")
-	allowedOrigins := fs.String("allowed-origins", "", "comma-separated browser origins allowed cross-origin (CORS + WebSocket), e.g. https://ra-yavuz.github.io; empty = same-origin only")
-	dbPath := fs.String("db", defaultDBPath(), "path to the SQLite database (channels, accounts, retained messages)")
-	legacyJSON := fs.String("migrate-json", "", "optional path to an M1 state.json to import once (grandfathers existing channels)")
+	allowedOrigins := fs.String("allowed-origins", "", "comma-separated browser origins allowed cross-origin (CORS + WebSocket), e.g. https://ra-yavuz.github.io; empty = open (any origin)")
+	redisAddr := fs.String("redis-addr", defaultRedisAddr(), "Redis address for channels/accounts/retained messages (host:port)")
 	sweep := fs.Duration("sweep-interval", time.Minute, "how often to prune expired retained messages")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: doublethink serve [flags]\n\n")
@@ -36,31 +34,15 @@ func runServe(args []string) error {
 		return err
 	}
 
-	// Store (channels, accounts, retained messages).
-	if dir := filepath.Dir(*dbPath); dir != "" {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return fmt.Errorf("creating db dir: %w", err)
-		}
-	}
-	st, err := store.Open(*dbPath)
+	// Store: Redis (channels, accounts, retained messages).
+	st, err := store.Open(*redisAddr)
 	if err != nil {
-		return fmt.Errorf("opening store %s: %w", *dbPath, err)
+		return fmt.Errorf("connecting to Redis at %s: %w", *redisAddr, err)
 	}
 	defer st.Close()
 
-	// One-time migration from an M1 JSON state file, if given. Idempotent.
-	if *legacyJSON != "" {
-		n, err := st.MigrateLegacyJSON(*legacyJSON)
-		if err != nil {
-			return fmt.Errorf("migrating %s: %w", *legacyJSON, err)
-		}
-		if n > 0 {
-			log.Printf("migrated %d channel(s) from %s (grandfathered, ephemeral)", n, *legacyJSON)
-		}
-	}
-
 	// Load the in-memory admission registry from the store so attach does not hit
-	// SQLite on every connection.
+	// Redis on every connection.
 	reg := auth.NewRegistry()
 	kauths, err := st.AllChannelKAuth()
 	if err != nil {
@@ -96,7 +78,7 @@ func runServe(args []string) error {
 	log.Printf("doublethink starting")
 	log.Printf("NO WARRANTY: provided as is; you are responsible for deployment, security, and the data that flows through it. The author is not liable for any harm, however caused.")
 	log.Printf("listening on %s", *addr)
-	log.Printf("db: %s  | %s", *dbPath, adStatus)
+	log.Printf("redis: %s  | %s", *redisAddr, adStatus)
 	log.Printf("loaded %d channel(s)", len(kauths))
 
 	public := &http.Server{Addr: *addr, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
@@ -146,13 +128,9 @@ func runSweeper(ctx context.Context, st *store.Store, every time.Duration) {
 	}
 }
 
-func defaultDBPath() string {
-	if x := os.Getenv("DOUBLETHINK_DB"); x != "" {
+func defaultRedisAddr() string {
+	if x := os.Getenv("DOUBLETHINK_REDIS_ADDR"); x != "" {
 		return x
 	}
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "doublethink.db"
-	}
-	return filepath.Join(dir, "doublethink", "doublethink.db")
+	return "127.0.0.1:6379"
 }

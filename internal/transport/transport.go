@@ -588,7 +588,7 @@ func (s *Server) pumpWS(ctx context.Context, c *websocket.Conn, channel string, 
 		// message from retention but does not kill the live connection.
 		if isRetained {
 			if _, err := s.store.Append(channel, e.ID, string(e.Type), e.TS, data, s.lim.BytesPerAccount); err != nil {
-				if errors.Is(err, store.ErrQuotaAcct) || errors.Is(err, store.ErrQuotaChan) {
+				if errors.Is(err, store.ErrQuotaAcct) {
 					s.sendError(ctx, c, "storage quota exceeded")
 					// still deliver live below; just not retained
 				}
