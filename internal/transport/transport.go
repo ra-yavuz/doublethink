@@ -98,12 +98,34 @@ func NewWithConfig(cfg Config) *Server {
 	s.mux.HandleFunc("/ws", s.handleWS)
 	s.mux.HandleFunc("/publish/", s.handlePublicPublish)
 	s.mux.HandleFunc("/subscribe/", s.handlePublicSubscribe)
+	s.mux.HandleFunc("/stats", s.handleStats)
 	s.mux.HandleFunc("/admin/limit", s.handleAdminLimit)
+	s.mux.HandleFunc("/admin/grant", s.handleAdminGrant)
+	s.mux.HandleFunc("/admin/channels", s.handleAdminChannels)
 	s.mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	return s
+}
+
+// requireAdmin checks the admin Bearer key; writes 404 (no admin surface) when
+// admin is disabled, 401 on a bad key. Returns true if the caller may proceed.
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if !s.admin.Enabled() || s.store == nil {
+		http.NotFound(w, r)
+		return false
+	}
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return false
+	}
+	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !s.admin.Verify(strings.TrimSpace(key)) {
+		http.Error(w, "not authorized", http.StatusUnauthorized)
+		return false
+	}
+	return true
 }
 
 // New is the legacy constructor (broker + in-memory auth only, no store/admin).
@@ -270,6 +292,7 @@ type createChannelReq struct {
 	AuthKey string `json:"auth_key"` // base32 K_auth, derived client-side from S
 	Retain  bool   `json:"retain"`   // request retention (requires an account)
 	TTLSec  int64  `json:"ttl_sec"`  // optional retention TTL override (capped)
+	Ticket  string `json:"ticket"`   // optional admin grant ticket -> permanent/over-default channel
 }
 
 // handleCreateChannel registers a private channel. The client sends the channel id
@@ -293,6 +316,34 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	authKey, err := clientcrypto.DecodeAuthKey(req.AuthKey)
 	if err != nil {
 		http.Error(w, "bad auth key", http.StatusBadRequest)
+		return
+	}
+
+	// Grant ticket: an admin pre-authorized this channel with a policy (possibly
+	// permanent / uncapped). The user brings their own secret; the policy comes
+	// from the ticket, not from this request. The admin never saw the secret.
+	if req.Ticket != "" {
+		if s.store == nil {
+			http.Error(w, "retention not available on this instance", http.StatusNotImplemented)
+			return
+		}
+		// A ticket may belong to an account holder or be anonymous; attribute to the
+		// account if one is presented, else leave unowned.
+		owner := s.authedAccount(r)
+		if err := s.store.CreateChannelWithTicket(req.Ticket, req.Channel, req.AuthKey, owner); err != nil {
+			switch {
+			case errors.Is(err, store.ErrExists):
+				http.Error(w, "channel already exists", http.StatusConflict)
+			case errors.Is(err, store.ErrBadTicket):
+				http.Error(w, "invalid, expired, or unauthorized ticket", http.StatusForbidden)
+			default:
+				http.Error(w, "internal error", http.StatusInternalServerError)
+			}
+			return
+		}
+		_ = s.reg.Register(req.Channel, authKey)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"channel": req.Channel, "created": true, "retained": true, "granted": true})
 		return
 	}
 
@@ -393,6 +444,82 @@ func (s *Server) handleAdminLimit(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"channel": req.Channel, "updated": true})
+}
+
+// --- admin: issue a grant ticket for a permanent / over-default-limit topic ---
+
+type adminGrantReq struct {
+	ChannelMatch string `json:"channel_match"` // exact id, or "prefix/*" namespace
+	TTLSec       int64  `json:"ttl_sec"`       // 0 = never expires (permanent)
+	MaxBytes     int64  `json:"max_bytes"`     // 0 = uncapped
+	MaxMsgs      int64  `json:"max_msgs"`      // 0 = uncapped
+	ExpirySec    int64  `json:"expiry_sec"`    // ticket lifetime; how long the user has to redeem it
+}
+
+// handleAdminGrant issues a single-use grant ticket. The admin specifies the POLICY
+// (which channel id/prefix, what TTL/caps, including permanent/uncapped). The user
+// later redeems the ticket when creating their own channel with their own secret,
+// so the admin never sees the secret. Admin-key authenticated.
+func (s *Server) handleAdminGrant(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req adminGrantReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil || req.ChannelMatch == "" {
+		http.Error(w, "bad request (channel_match required)", http.StatusBadRequest)
+		return
+	}
+	expiry := req.ExpirySec
+	if expiry <= 0 {
+		expiry = 3600 // default: ticket valid 1 hour to be redeemed
+	}
+	ticket, err := s.store.IssueGrant(store.Grant{
+		ChannelMatch: req.ChannelMatch, Retained: true,
+		TTLSeconds: req.TTLSec, MaxBytes: req.MaxBytes, MaxMsgs: req.MaxMsgs,
+	}, expiry)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ticket": ticket, "channel_match": req.ChannelMatch, "expiry_sec": expiry,
+		"note": "give this ticket to the user; they create the channel with it and their own secret. Single use; expires.",
+	})
+}
+
+// handleAdminChannels lists channel METADATA (never secrets or payloads). Admin-key.
+func (s *Server) handleAdminChannels(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	list, err := s.store.ListChannels()
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"channels": list})
+}
+
+// handleStats serves PUBLIC aggregate counters: no IPs, no per-user data, no
+// channel ids. Safe for a public usage page.
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "stats not available", http.StatusNotImplemented)
+		return
+	}
+	st, err := s.store.Stats()
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(st)
 }
 
 // --- WebSocket: private channels ---

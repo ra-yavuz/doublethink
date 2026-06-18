@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,17 +26,44 @@ import (
 
 const adminKey = "test-admin-key-with-enough-entropy-xxxxx"
 
+// startTestRedis boots a throwaway redis-server on a unix socket and returns a
+// connected store. Skips if redis-server is absent.
+func startTestRedis(t *testing.T) *store.Store {
+	t.Helper()
+	bin, err := exec.LookPath("redis-server")
+	if err != nil {
+		t.Skip("redis-server not on PATH; skipping Redis-backed transport tests")
+	}
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "r.sock")
+	cmd := exec.Command(bin, "--port", "0", "--unixsocket", sock, "--save", "", "--appendonly", "no", "--dir", dir)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start redis: %v", err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
+	var st *store.Store
+	for i := 0; i < 100; i++ {
+		st, err = store.Open("unix://" + sock)
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if st == nil {
+		t.Fatalf("connect redis: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return st
+}
+
 func retentionServer(t *testing.T) (httpURL, wsURL string, st *store.Store, closeFn func()) {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "r.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	st = startTestRedis(t)
 	ad, _ := admin.From(adminKey)
 	srv := httptest.NewServer(transport.NewWithConfig(transport.Config{
 		Broker: broker.New(), Reg: auth.NewRegistry(), Store: st, Admin: ad, Limits: limits.DefaultLimits(),
 	}).Handler())
-	t.Cleanup(func() { srv.Close(); st.Close() })
+	t.Cleanup(func() { srv.Close() })
 	return srv.URL, "ws" + strings.TrimPrefix(srv.URL, "http"), st, srv.Close
 }
 
