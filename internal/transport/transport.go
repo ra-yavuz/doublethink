@@ -133,6 +133,8 @@ var rootBrushoffs = []string{
 	"You have reached a pipe. Pipes do not have home pages. Off you pop.",
 	"404 and proud. doublethink is all plumbing, no lobby.",
 	"A wild human appears! It is super ineffective. There is nothing here.",
+	"The name? \"Doublethink\" is from George Orwell's Nineteen Eighty-Four (1949): holding two contradictory ideas at once and believing both. Fitting for a broker that proves you hold a secret while never seeing it.",
+	"As Orwell put it in Nineteen Eighty-Four: \"Doublethink means the power of holding two contradictory beliefs in one's mind simultaneously, and accepting both of them.\" Anyway, no web page here.",
 }
 
 var rootHits atomic.Uint64
