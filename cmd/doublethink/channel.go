@@ -24,10 +24,12 @@ func runChannel(args []string) error {
 	fs := flag.NewFlagSet("channel create", flag.ContinueOnError)
 	server := fs.String("server", "http://127.0.0.1:8080", "base URL of the doublethink broker")
 	prefix := fs.String("prefix", "", "optional human prefix for the channel id (e.g. codespeak)")
+	channelID := fs.String("channel", "", "explicit channel id (required with --ticket if the grant is for an exact id)")
 	retain := fs.Bool("retain", false, "retain messages so an offline peer can catch up (requires an account)")
 	account := fs.String("account", "", "account id (required with --retain)")
 	apiKey := fs.String("api-key", "", "account API key (required with --retain)")
 	ttlSec := fs.Int64("ttl-sec", 0, "retention TTL in seconds (0 = server default; capped at the server max)")
+	ticket := fs.String("ticket", "", "admin grant ticket -> create a permanent / over-default topic the admin pre-authorized")
 	quiet := fs.Bool("quiet", false, "print only 'channel<TAB>secret' (for scripting)")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: doublethink channel create [flags]\n\n")
@@ -36,15 +38,20 @@ func runChannel(args []string) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	if *retain && (*account == "" || *apiKey == "") {
-		return fmt.Errorf("--retain requires --account and --api-key (run 'doublethink account create')")
+	if *retain && *ticket == "" && (*account == "" || *apiKey == "") {
+		return fmt.Errorf("--retain requires --account and --api-key (run 'doublethink account create'), or use --ticket")
 	}
 
-	// High-entropy, unguessable channel id (the name is not the gate, the secret
-	// is, but an unguessable id removes enumeration as a cheap probe).
-	id, err := randomChannelID(*prefix)
-	if err != nil {
-		return err
+	// Channel id: an explicit --channel (needed when redeeming a ticket bound to an
+	// exact id), else a high-entropy unguessable id. The name is not the gate, the
+	// secret is; an unguessable id removes enumeration as a cheap probe.
+	id := *channelID
+	if id == "" {
+		var err error
+		id, err = randomChannelID(*prefix)
+		if err != nil {
+			return err
+		}
 	}
 
 	// The shared secret S: generated here, shared out of band, NEVER sent to the
@@ -60,12 +67,17 @@ func runChannel(args []string) error {
 
 	req := map[string]any{"channel": id, "auth_key": authKey, "retain": *retain}
 	var headers map[string]string
-	if *retain {
-		req["ttl_sec"] = *ttlSec
-		headers = map[string]string{
-			"Authorization":         "Bearer " + *apiKey,
-			"X-Doublethink-Account": *account,
+	switch {
+	case *ticket != "":
+		// Redeem an admin grant: the channel's policy (e.g. permanent) comes from
+		// the ticket. An account key, if supplied, attributes ownership.
+		req["ticket"] = *ticket
+		if *account != "" && *apiKey != "" {
+			headers = map[string]string{"Authorization": "Bearer " + *apiKey, "X-Doublethink-Account": *account}
 		}
+	case *retain:
+		req["ttl_sec"] = *ttlSec
+		headers = map[string]string{"Authorization": "Bearer " + *apiKey, "X-Doublethink-Account": *account}
 	}
 	if err := postJSONAuth(*server, "/channel", req, nil, headers); err != nil {
 		return fmt.Errorf("creating channel: %w", err)
@@ -76,7 +88,9 @@ func runChannel(args []string) error {
 		return nil
 	}
 	kind := "ephemeral (online-only)"
-	if *retain {
+	if *ticket != "" {
+		kind = "permanent / admin-granted (retained)"
+	} else if *retain {
 		kind = "retained (offline peers can catch up)"
 	}
 	fmt.Printf("created private channel (%s):\n", kind)

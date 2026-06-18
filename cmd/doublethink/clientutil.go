@@ -16,6 +16,32 @@ func postJSON(server, path string, reqBody any, out any) error {
 	return postJSONAuth(server, path, reqBody, out, nil)
 }
 
+// getJSONAuth GETs a broker endpoint with optional headers and decodes the JSON.
+func getJSONAuth(server, path string, out any, headers map[string]string) error {
+	client := &http.Client{Timeout: 15 * time.Second}
+	url := strings.TrimRight(server, "/") + path
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("contacting broker at %s: %w (is it running?)", server, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(msg)))
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
 // postJSONAuth is postJSON with optional request headers (e.g. Authorization).
 func postJSONAuth(server, path string, reqBody any, out any, headers map[string]string) error {
 	b, _ := json.Marshal(reqBody)

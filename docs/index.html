@@ -261,8 +261,34 @@ doublethink channel create --prefix codespeak --retain \
     creation, publishing, and connections are rate-limited per source. An operator
     can raise a preferred channel's limits with <code>doublethink admin set-limit</code>
     (authenticated by the <code>DOUBLETHINK_ADMIN_KEY</code> the broker runs with);
-    the admin key controls limits and reads usage metadata only, it never grants
-    access to any channel's payloads.
+    the admin key controls limits and grants and reads usage metadata only, it never
+    grants access to any channel's payloads.
+  </p>
+
+  <h2>Permanent channels, without the admin seeing your secret</h2>
+  <p>
+    For a channel that should persist indefinitely (or for any TTL up to infinity),
+    the operator pre-authorizes it with a single-use grant ticket and hands it to
+    you. You redeem the ticket while creating the channel <strong>with your own
+    secret</strong>, so the operator authorizes a durable channel without ever
+    learning the secret and cannot read it:
+  </p>
+<pre><code># Operator issues a grant for a permanent channel (admin key):
+doublethink admin grant --channel perm/team-debug --ttl-sec 0
+#   grant ticket (single use, valid 60 minutes to redeem): &lt;ticket&gt;
+
+# You redeem it with your OWN secret (no admin key needed):
+doublethink channel create --channel perm/team-debug --ticket &lt;ticket&gt;
+#   secret: &lt;high-entropy secret&gt;   the operator never sees this</code></pre>
+  <p>
+    <code>--ttl-sec 0</code> means never expire. The channel's policy comes from the
+    ticket, not from the client, so a leaked ticket cannot widen its own
+    authorization; it is single-use and expires if unredeemed. Storage is in Redis
+    with about once-a-second persistence: a clean shutdown loses nothing, a hard
+    crash can lose up to roughly the last second of writes ("permanent" means the
+    data does not age out, not crash-proof to the millisecond). The full admin API
+    and the grant flow are in the
+    <a href="https://github.com/ra-yavuz/doublethink/blob/main/docs/ADMIN.md">admin reference</a>.
   </p>
 
   <h2>The honest limits</h2>
@@ -290,6 +316,20 @@ doublethink channel create --prefix codespeak --retain \
     software you accept these terms. See
     <a href="https://github.com/ra-yavuz/doublethink/blob/main/README.md#disclaimer--no-warranty">README</a>
     for the full text.
+  </div>
+
+  <div class="warn">
+    <strong>The public instance at <code>api.caleidoscode.io</code>:</strong> a
+    free, best-effort service with <strong>no SLA and no guarantees</strong>. It
+    may be rate-limited, wiped, or <strong>shut down at any time without
+    notice</strong>. Do not depend on it; if you need guarantees, self-host (the
+    single-binary design exists for exactly that). Use is subject to an
+    acceptable-use policy (no illegal use) and an abuse/takedown process keyed on
+    channel id; payloads are end-to-end encrypted and not monitored. Report abuse to
+    <a href="mailto:abuse@caleidoscode.io">abuse@caleidoscode.io</a>. The public
+    <code>/stats</code> endpoint exposes aggregate counts only, never IPs or channel
+    ids. Full terms:
+    <a href="https://github.com/ra-yavuz/doublethink/blob/main/docs/LEGAL.md">legal &amp; acceptable use</a>.
   </div>
 
   <footer>

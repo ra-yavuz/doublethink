@@ -88,6 +88,42 @@ Anonymous clients can still create ephemeral channels and use public topics, but
 **not** retained ones (that path needs an account so storage can be attributed and
 bounded).
 
+### Permanent and admin-provisioned channels
+
+A retained channel ages out by a TTL by default. For a channel that should
+**persist indefinitely** (or for any TTL up to infinity) the operator
+pre-authorizes it with a **single-use grant ticket**, and the user redeems the
+ticket while creating the channel **with their own secret**. The admin authorizes
+the durable channel **without ever learning the secret** and cannot read it:
+
+```
+# Operator (holds the admin key) issues a grant for a permanent channel:
+doublethink admin grant --channel perm/team-debug --ttl-sec 0
+#   grant ticket (single use, valid 60 minutes to redeem): <ticket>
+
+# User redeems it with their OWN secret (no admin key needed):
+doublethink channel create --channel perm/team-debug --ticket <ticket>
+#   channel: perm/team-debug
+#   secret:  <high-entropy secret>   <- the user keeps this; the admin never sees it
+```
+
+`--ttl-sec 0` means never expire. The channel's policy comes from the ticket, not
+from the client, so the grant cannot be used to authorize more than the operator
+chose; the ticket is single-use and expires if not redeemed. The full admin API,
+the grant flow, and the storage durability guarantee are in
+[`docs/ADMIN.md`](docs/ADMIN.md).
+
+### Storage and durability
+
+doublethink stores channels, retained messages, and accounts in **Redis** (one
+binary plus a Redis instance; there is no other database). Redis is run for high
+throughput with periodic persistence: writes are appended and flushed to disk
+about once a second. A clean shutdown loses nothing; a **hard crash or power loss
+can lose up to roughly the last one second** of writes. "Permanent" channels mean
+the data does not age out, not that it survives a power cut to the millisecond.
+If you need zero-loss-on-crash, configure Redis accordingly (see
+[`docs/ADMIN.md`](docs/ADMIN.md)).
+
 ### Limits and accounts
 
 A public instance bounds resource use. Retention is capped per channel (a message
@@ -95,9 +131,13 @@ count and a byte size, oldest evicted past either) and aged out by a TTL (defaul
 24h, max 7d). Each account has a storage quota (256 MiB) and a channel cap (100).
 Messages are size-capped (256 KiB), and channel creation, publishing, and
 connections are rate-limited per source. An operator can raise the limits for a
-preferred channel with `doublethink admin set-limit` (authenticated by the
-`DOUBLETHINK_ADMIN_KEY` the broker runs with); the admin key controls limits and
-reads usage metadata only, it never grants access to any channel's payloads.
+preferred channel with `doublethink admin set-limit`, pre-authorize permanent
+channels with `doublethink admin grant`, and list channel metadata with
+`doublethink admin channels` (all authenticated by the `DOUBLETHINK_ADMIN_KEY`
+the broker runs with, and disabled entirely when it is unset). The admin key
+controls limits, grants, and reads usage metadata only; it never grants access to
+any channel's payloads. The aggregate, non-identifying counters are public at
+`GET /stats`. The full admin reference is in [`docs/ADMIN.md`](docs/ADMIN.md).
 
 **What retention costs you to know:** stored messages are user data. They expire,
 can be evicted to stay within caps, and count against quota. End-to-end encryption
@@ -144,7 +184,21 @@ By installing or running this software you accept that:
 
 If you do not accept these terms, do not install or run this software.
 
-Full legal license: see [`LICENSE`](LICENSE) (MIT) once published.
+End-to-end encryption is a feature of the software, and using it is lawful;
+doublethink is a general-purpose dual-use communications tool.
+
+### The public instance at `api.caleidoscode.io`
+
+The author runs a free public instance for the demo and for trying doublethink
+out. It is **free, best-effort, with no SLA and no guarantees**, and **may be
+rate-limited, wiped, or shut down at any time without notice**. Do not depend on
+it; if you need guarantees, **self-host** (that is what the single-binary design
+is for). Use of the public instance is subject to an acceptable-use policy (no
+illegal use), an abuse/takedown process keyed on channel id, and a GDPR-safe
+stats posture. All of that is in [`docs/LEGAL.md`](docs/LEGAL.md); the abuse
+contact is `abuse@caleidoscode.io`.
+
+Full legal license: see [`LICENSE`](LICENSE) (MIT).
 
 ## Author
 

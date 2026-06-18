@@ -1,8 +1,9 @@
 // Command doublethink is the broker server and its pairing CLI.
 //
 //	doublethink serve            run the broker (private + public channels)
-//	doublethink channel create   mint a private channel against a running server
-//	doublethink pair             join a private channel as a peer (generates keys)
+//	doublethink account create   create an account (needed for retained channels)
+//	doublethink channel create   mint a private channel (or redeem an admin grant)
+//	doublethink admin            operator commands: grant, set-limit, channels
 //
 // doublethink is a secure publish/subscribe message broker: ntfy-easy setup with
 // real authentication and genuinely private, end-to-end-encrypted channels.
@@ -31,15 +32,20 @@ func usage() {
 	fmt.Fprint(os.Stderr, `doublethink: a secure pub/sub broker, ntfy-easy with real private channels.
 
 Usage:
-  doublethink serve [flags]            run the broker
-  doublethink account create [flags]   create an account; prints an API key (needed for retained channels)
-  doublethink channel create [flags]   create a private channel; prints its shared secret
-  doublethink admin set-limit [flags]  (operator) raise a channel's retention limits
+  doublethink serve [flags]             run the broker
+  doublethink account create [flags]    create an account; prints an API key (needed for retained channels)
+  doublethink channel create [flags]    create a private channel; prints its shared secret
+                                        (--ticket redeems an admin grant for a permanent channel)
+  doublethink admin grant [flags]       (operator) issue a single-use ticket for a permanent / over-default channel
+  doublethink admin set-limit [flags]   (operator) raise an existing channel's retention limits
+  doublethink admin channels [flags]    (operator) list channel metadata (no secrets)
 
 To use a private channel, both parties connect to it with the shared secret. The
 secret is the gate: whoever holds it can join, and no one else can. Share it over a
 trusted channel; the broker never sees it. A retained channel (messages stored for
 an offline peer to catch up) requires an account API key and counts against quota.
+A permanent channel is pre-authorized by an operator grant; the user redeems the
+grant ticket with their own secret, so the operator never sees the secret.
 
 Run "doublethink <command> -h" for command flags.
 

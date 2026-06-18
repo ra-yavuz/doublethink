@@ -32,9 +32,13 @@ state.json
 portainer/
 
 # Internal planning / design-process docs: kept locally, NOT published.
-# (Public surface is the README + docs/SECURITY.md + the code.)
+# (Public surface is the README + docs/SECURITY.md + docs/ADMIN.md + docs/LEGAL.md + the code.)
 /GOAL.md
 /docs/DESIGN-M1.md
 /docs/DESIGN-M2.md
+/docs/DESIGN-M3.md
 /docs/RESEARCH.md
 /docs/CODESPEAK-REQUIREMENTS.md
+
+# local scratch (not published)
+/.scratch/

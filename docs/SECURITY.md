@@ -82,25 +82,43 @@ The load-bearing mechanisms behind the requirements above:
   unintentionally open. Insecurity must require a deliberate, informed choice,
   not be the default outcome of following the quickstart.
 
-## Identity tiers and retention (M2)
+## Identity tiers, retention, and admin grants
 
-doublethink M2 adds three tiers of identity and an opt-in retention store. The
-security-relevant points:
+doublethink has three tiers of identity, an opt-in retention store, and an
+operator grant mechanism for permanent channels. The security-relevant points:
 
 - **Three tiers.** Anonymous (ephemeral private channels and public plaintext
   topics only, under per-IP rate/connection limits); an **account API key**
   (`POST /account`; required to create a *retained* channel; quotas attributed to
   it; the broker stores only a hash of the key, never the key); and an **operator
   admin key** (set in the broker's environment as `DOUBLETHINK_ADMIN_KEY`; raises
-  limits for preferred channels and reads usage metadata). The admin key grants
-  metadata/limit control ONLY, never payload access. It is fail-safe disabled when
-  unset, never logged, and compared in constant time.
+  limits, issues grants, and reads usage metadata). The admin key grants
+  metadata/limit/grant control ONLY, never payload access. It is fail-safe
+  disabled when unset (all `/admin/*` routes return 404), never logged, and
+  compared in constant time.
+- **Admin grants never expose secrets.** An admin authorizes a permanent (or any
+  TTL) channel by issuing a single-use ticket; the user redeems it with their own
+  secret, so the admin authorizes the channel's *policy* without ever seeing the
+  *secret* and cannot read its payloads. The channel's policy comes from the
+  ticket, not from client input, so a leaked ticket cannot escalate its own
+  authorization; the ticket is consumed atomically on redeem (no replay) and
+  expires if unredeemed. See [`ADMIN.md`](ADMIN.md) for the flow.
 - **No anonymous retained channels.** Retention consumes storage, so it requires
-  an account that quotas can be charged against. Anonymous use stays unbounded only
-  in the ephemeral/no-storage sense, under tight per-IP limits.
-- **Retained ciphertext is user data.** It expires (TTL), can be evicted (ring
-  buffer) or deleted, and counts to quota. It is stored as ciphertext the broker
-  cannot read. Treat it, and the metadata around it, accordingly.
+  an account that quotas can be charged against, or an admin grant. Anonymous use
+  stays unbounded only in the ephemeral/no-storage sense, under tight per-IP
+  limits.
+- **Retained ciphertext is user data.** It expires (TTL; `0` = permanent), can be
+  evicted (ring buffer) or deleted, and counts to quota. It is stored as
+  ciphertext the broker cannot read. Treat it, and the metadata around it,
+  accordingly.
+- **Durability is bounded, not absolute.** Retained data lives in Redis with
+  periodic (about once-a-second) persistence. A clean shutdown loses nothing; a
+  hard crash can lose up to roughly the last second of writes. "Permanent" means
+  the data does not age out, not crash-proof to the millisecond. Quantified in
+  [`ADMIN.md`](ADMIN.md).
+- **Public stats are aggregate-only.** `GET /stats` exposes counts only: no IPs,
+  no channel ids, no per-user or per-site data. It cannot identify who uses the
+  broker.
 
 ## Out of scope (stated so it is not mistaken for covered)
 
