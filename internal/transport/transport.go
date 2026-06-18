@@ -127,8 +127,12 @@ var rootBrushoffs = []string{
 	"Go away. (Politely.) doublethink talks to programs, not people.",
 	"No page here. If you were looking for the project, try the docs on GitHub.",
 	"This endpoint speaks JSON and WebSockets, not HTML. Nothing for you to read.",
-	"Shoo. This host carries other people's private traffic; it is not a destination.",
 	"Wrong door. doublethink is plumbing, not a place to visit.",
+	"Beep boop. I only speak to machines. You appear to be a human. Awkward.",
+	"This is the back of the house. The kitchen. There is no menu. Shoo.",
+	"You have reached a pipe. Pipes do not have home pages. Off you pop.",
+	"404 and proud. doublethink is all plumbing, no lobby.",
+	"A wild human appears! It is super ineffective. There is nothing here.",
 }
 
 var rootHits atomic.Uint64
