@@ -1,0 +1,20 @@
+{
+  "_note": "Golden vectors from internal/clientcrypto. hex unless _b64/_b32 suffix. Kotlin must reproduce every value.",
+  "auth_tag": "doublethink-auth-v1",
+  "blake2b256_of_secret_decoded": "cb2f5160fc1f7e05a55ef49d340b48da2e5a78099d53393351cd579dd42503d6",
+  "challenge": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+  "challenge_response": "cf226574c7dfb36c2e952daa2dac54283ae0dcc4d122cb52aaf57d5785ac8cee",
+  "challenge_tag": "doublethink-challenge-v1",
+  "enc_tag": "doublethink-enc-v1",
+  "k_auth": "430accc90cb6cf92f191095793d14c1f38f44be5d83f443bceff20f398579a61",
+  "k_enc": "0339281504fe98cdba749615123186e5c7086afb7d0b9b91233c955d7041975a",
+  "key_a_to_b": "48a2273e5c33bc42760260dcd6d5c202a3913eae42f946fcacfd314c211368b6",
+  "key_b_to_a": "c56570cdc738b15a3b4a69170e34dbdec3c2c0cb02429bb7b1608433675b4c9c",
+  "reg_key_check_b32": "IMFMZSIMW3HZF4MRBFLZHUKMD44PIS7F3A7UIO6O74QPHGCXTJQQ",
+  "registration_key_b32": "IMFMZSIMW3HZF4MRBFLZHUKMD44PIS7F3A7UIO6O74QPHGCXTJQQ",
+  "secret": "AAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYPQ",
+  "secret_decoded": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "secretbox_nonce": "404142434445464748494a4b4c4d4e4f5051525354555657",
+  "secretbox_plaintext": "doublethink parity vector",
+  "secretbox_sealed_b64": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZX0m3CrLm+z6V+6+6z//xrco7l9PveayEN5lA1xvOMotz8J6sz2et1Or4="
+}

@@ -1,0 +1,46 @@
+# doublethink Android dev container - build-only, host stays clean.
+#
+# Mounts:
+#   - project repo  -> /workspace            (source; APKs build here)
+#   - artifacts dir -> /workspace/artifacts  (APKs copied out to the host)
+#   - gradle cache  -> host dir (faster rebuilds; must be host-owned)
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Match host user so mounted files aren't root-owned. Override if your
+        # host UID/GID differ from 1000 (check with `id -u` / `id -g`).
+        HOST_UID: ${HOST_UID:-1000}
+        HOST_GID: ${HOST_GID:-1000}
+    image: doublethink-android-dev:latest
+    container_name: doublethink-android-dev
+    working_dir: /workspace
+    volumes:
+      - ../:/workspace
+      - ./gradle-cache:/home/dev/.gradle
+      - ./artifacts:/workspace/artifacts
+    # Keeps the container alive for `docker compose exec dev <cmd>`.
+    command: sleep infinity
+
+  # Opt-in headless Android emulator. Ready-made image (budtmo) so we don't
+  # hand-build emulator-in-Docker. The `dev` container drives it over the
+  # compose network via `adb connect emulator:5555`.
+  # Run with:  docker compose --profile emu up -d emulator
+  emulator:
+    image: budtmo/docker-android:emulator_13.0
+    container_name: doublethink-android-emulator
+    profiles: ["emu"]
+    devices:
+      - /dev/kvm
+    ports:
+      - "6080:6080"   # noVNC (optional visual)
+      - "5555:5555"   # adb
+    environment:
+      - EMULATOR_DEVICE=Samsung Galaxy S10
+      - WEB_VNC=true
+      - EMULATOR_ADDITIONAL_ARGS=-dns-server 8.8.8.8,8.8.4.4 -netspeed full -netdelay none
+    # The image needs elevated privileges for KVM/networking.
+    privileged: true

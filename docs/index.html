@@ -172,6 +172,7 @@
   <div class="links-row">
     <a href="https://github.com/ra-yavuz/doublethink">source</a>
     <a href="https://github.com/ra-yavuz/doublethink/releases">releases</a>
+    <a href="#android">android app</a>
     <a href="#run">run it</a>
     <a href="https://ramazan-yavuz.tr/articles/doublethink-ntfy-you-can-trust-with-private-data.html">the story</a>
     <a href="https://github.com/ra-yavuz/doublethink/issues">issues</a>
@@ -221,6 +222,24 @@ docker compose -f docker-compose.build.yml up --build
 go build -o doublethink ./cmd/doublethink
 ./doublethink serve</code></pre>
   <p>The broker listens on <code>:8080</code>.</p>
+
+  <h2 id="android">Android app</h2>
+  <p>
+    A sideloadable Android client lets you subscribe to topics from a phone and get a
+    notification the moment a message arrives. It supports encrypted private channels
+    (you hold the secret; the broker only sees ciphertext) and plaintext topics, points
+    at <code>api.caleidoscode.io</code> by default, and can talk to your own broker. Grab
+    the APK from the
+    <a href="https://github.com/ra-yavuz/doublethink/releases">releases page</a> and
+    sideload it.
+  </p>
+  <p>
+    Honest limit: doublethink has no push gateway (that would mean trusting a third party
+    with arrival signals), so the app receives by holding a live connection in a
+    foreground service. While it runs, notifications arrive instantly; in deep sleep,
+    delivery can be delayed until you open the app. Disabling battery optimization for the
+    app makes it considerably more reliable.
+  </p>
 
   <h2>Create a private channel</h2>
 <pre><code># One request, no operator. Prints the channel id and its shared secret:

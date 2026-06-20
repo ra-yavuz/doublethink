@@ -1,0 +1,12 @@
+.gradle/
+build/
+app/build/
+.claude-dev/gradle-cache/
+.claude-dev/artifacts/
+local.properties
+*.jks
+*.keystore
+.idea/
+*.iml
+.claude-dev/offline-repo/
+build-out.txt
