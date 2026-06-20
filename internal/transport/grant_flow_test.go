@@ -204,18 +204,33 @@ func TestGrantPlaintextRetainedTopicFlow(t *testing.T) {
 	}
 }
 
-// A keyless create WITHOUT a ticket is rejected: only an admin grant authorizes a
-// plaintext topic, so the open retention path cannot be opened without one.
-func TestKeylessCreateWithoutTicketRejected(t *testing.T) {
+// Keyless create behavior on the public tier:
+//   - keyless + retain:true  -> allowed (a public capped retained plaintext topic,
+//     used for sealed-ciphertext contact inboxes; TTL capped, no key ceremony).
+//   - keyless + ephemeral    -> rejected (an ad-hoc open topic needs no create call).
+func TestKeylessCreateBehavior(t *testing.T) {
 	httpURL, _, _, _ := retentionServer(t)
-	body, _ := json.Marshal(map[string]any{"channel": "ring/sneaky", "retain": true}) // no auth_key, no ticket
-	resp, err := http.Post(httpURL+"/channel", "application/json", bytes.NewReader(body))
+
+	// Keyless + retain is now allowed.
+	retBody, _ := json.Marshal(map[string]any{"channel": "ring/inbox", "retain": true})
+	retResp, err := http.Post(httpURL+"/channel", "application/json", bytes.NewReader(retBody))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("keyless no-ticket create = %d, want 400", resp.StatusCode)
+	defer retResp.Body.Close()
+	if retResp.StatusCode != http.StatusOK {
+		t.Fatalf("keyless retained create = %d, want 200", retResp.StatusCode)
+	}
+
+	// Keyless + ephemeral is rejected (no point creating an unregistered open topic).
+	ephBody, _ := json.Marshal(map[string]any{"channel": "ring/ephemeral"})
+	ephResp, err := http.Post(httpURL+"/channel", "application/json", bytes.NewReader(ephBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ephResp.Body.Close()
+	if ephResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("keyless ephemeral create = %d, want 400", ephResp.StatusCode)
 	}
 }
 

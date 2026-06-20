@@ -61,6 +61,7 @@ class SubscriptionService : Service() {
             client = client,
             secretFor = { topic -> vault.get(topic.id) },
             sink = serviceSink,
+            boxKeypair = { vault.boxKeypair() },
         )
 
         startForegroundStatus(0)

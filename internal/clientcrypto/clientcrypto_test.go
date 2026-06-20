@@ -163,3 +163,39 @@ func TestInvalidSecretRejected(t *testing.T) {
 		t.Error("AuthKey accepted a too-short secret")
 	}
 }
+
+func TestSealedBoxRoundTrip(t *testing.T) {
+	kp, err := GenerateBoxKeypair()
+	if err != nil {
+		t.Fatalf("GenerateBoxKeypair: %v", err)
+	}
+	msg := []byte("sealed hello")
+	sealed, err := SealTo(kp.Public, msg)
+	if err != nil {
+		t.Fatalf("SealTo: %v", err)
+	}
+	// Layout: ephemeral_pub(32) || box(MAC(16)+ciphertext). Overhead = 48 bytes.
+	if want := len(msg) + 48; len(sealed) != want {
+		t.Errorf("sealed length = %d, want %d", len(sealed), want)
+	}
+	opened, ok := OpenSealed(kp, sealed)
+	if !ok {
+		t.Fatal("OpenSealed returned false on a valid blob")
+	}
+	if string(opened) != string(msg) {
+		t.Errorf("opened = %q, want %q", opened, msg)
+	}
+}
+
+func TestSealedBoxWrongKeyFails(t *testing.T) {
+	kp, _ := GenerateBoxKeypair()
+	other, _ := GenerateBoxKeypair()
+	sealed, _ := SealTo(kp.Public, []byte("secret"))
+	if _, ok := OpenSealed(other, sealed); ok {
+		t.Error("OpenSealed accepted a blob sealed to a different key")
+	}
+	// Sender cannot decrypt its own sealed message (ephemeral key discarded).
+	if _, ok := OpenSealed(kp, sealed[:len(sealed)-1]); ok {
+		t.Error("OpenSealed accepted a truncated blob")
+	}
+}

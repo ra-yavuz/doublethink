@@ -70,3 +70,36 @@ func ChallengeResponse(secret string, challenge []byte) ([]byte, error) {
 func NewSession(secret string, role Role) (*Session, error) {
 	return internal.NewSession(secret, role)
 }
+
+// --- Sealed boxes (anonymous public-key encryption) ---
+//
+// For the case the shared-secret model does not cover: anyone can encrypt TO a
+// published public key, and only the keyholder can read it. This is what lets a
+// public web page (which can hold only a public key) send a message the operator
+// and the public cannot read, openable solely on the recipient's device. The
+// construction is NaCl crypto_box_seal (Curve25519 + XSalsa20-Poly1305) with a
+// fresh discarded ephemeral keypair per message, so even the sender cannot decrypt
+// afterward. Honest limits: anonymous (no sender authenticity, spam-able), and
+// losing the private key makes everything sealed to it unreadable.
+
+// BoxKeypair is a Curve25519 keypair for sealed-box encryption. The public key is
+// safe to publish; the private key stays on the recipient's device.
+type BoxKeypair = internal.BoxKeypair
+
+// BoxPublicKeySize / BoxPrivateKeySize are the Curve25519 key lengths.
+const (
+	BoxPublicKeySize  = internal.BoxPublicKeySize
+	BoxPrivateKeySize = internal.BoxPrivateKeySize
+)
+
+// GenerateBoxKeypair returns a fresh Curve25519 keypair for sealed boxes.
+func GenerateBoxKeypair() (BoxKeypair, error) { return internal.GenerateBoxKeypair() }
+
+// SealTo anonymously encrypts msg to recipientPub (crypto_box_seal). Output is
+// ephemeral_pub(32) || box, byte-compatible with libsodium and the JS/Kotlin clients.
+func SealTo(recipientPub [BoxPublicKeySize]byte, msg []byte) ([]byte, error) {
+	return internal.SealTo(recipientPub, msg)
+}
+
+// OpenSealed decrypts a sealed blob with the recipient keypair; false on any failure.
+func OpenSealed(kp BoxKeypair, blob []byte) ([]byte, bool) { return internal.OpenSealed(kp, blob) }

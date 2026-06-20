@@ -2,6 +2,13 @@
   "_note": "Golden vectors from internal/clientcrypto. hex unless _b64/_b32 suffix. Kotlin must reproduce every value.",
   "auth_tag": "doublethink-auth-v1",
   "blake2b256_of_secret_decoded": "cb2f5160fc1f7e05a55ef49d340b48da2e5a78099d53393351cd579dd42503d6",
+  "box_fixed_ephemeral_pk_b64": "ST6C/HRGSlkmiBdiPSBTxeuOLMSpiLT+4XnsawENUx0=",
+  "box_fixed_ephemeral_sk_b64": "gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8=",
+  "box_plaintext": "sealed contact: hello from the page",
+  "box_recipient_pk_b64": "eaYx7t4b+cmPEgMs3q3Q56B5OY/HhriMyEbsia+FpRo=",
+  "box_recipient_sk_b64": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8=",
+  "box_sealed_by_go_b64": "0Num+y+XWjKpxnMWFdzK2EzRs+p8MaUrb4OaUTnNHyQ69hVun6AraHFX/pwHkrh0WAyNNvxciNlR1A8lanVDd3gTNCn5daqxUPxWY29KuKswcdw=",
+  "box_sealed_deterministic_b64": "ST6C/HRGSlkmiBdiPSBTxeuOLMSpiLT+4XnsawENUx2DS551HHdr0dJobgFmp00rpRJDpnR0PpfCpvUvORhlKmp+3Y6B3w3RloW38upAVa2b4+0=",
   "challenge": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
   "challenge_response": "cf226574c7dfb36c2e952daa2dac54283ae0dcc4d122cb52aaf57d5785ac8cee",
   "challenge_tag": "doublethink-challenge-v1",
@@ -16,5 +23,6 @@
   "secret_decoded": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
   "secretbox_nonce": "404142434445464748494a4b4c4d4e4f5051525354555657",
   "secretbox_plaintext": "doublethink parity vector",
-  "secretbox_sealed_b64": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZX0m3CrLm+z6V+6+6z//xrco7l9PveayEN5lA1xvOMotz8J6sz2et1Or4="
+  "secretbox_sealed_b64": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZX0m3CrLm+z6V+6+6z//xrco7l9PveayEN5lA1xvOMotz8J6sz2et1Or4=",
+  "box_sealed_by_js_b64": "NJrNR8Twi7cJ6cXuNyRidkMvZ53/tAfqX0m7NNDvBWqCz9zMExck61hbNLjbHicf5Xf2/iAmyqA1i6FCaZtMgTPvvOoSOXpSV7Roeshc4LfGViE="
 }

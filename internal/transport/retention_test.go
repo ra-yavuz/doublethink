@@ -189,19 +189,39 @@ func TestRetainedCatchUp(t *testing.T) {
 	}
 }
 
-// Anonymous (no account) cannot create a retained channel.
-func TestAnonymousCannotRetain(t *testing.T) {
-	httpURL, _, _, _ := retentionServer(t)
+// Anonymous (no account) CAN now create a retained channel, on the capped public
+// tier: the request succeeds and the TTL is forced to at most RetentionTTLMax
+// (7 days), even when a longer TTL is requested.
+func TestAnonymousRetainCappedTier(t *testing.T) {
+	httpURL, _, st, _ := retentionServer(t)
 	secret, _ := clientcrypto.GenerateSecret()
 	ka, _ := clientcrypto.RegistrationKey(secret)
-	body, _ := json.Marshal(map[string]any{"channel": "x", "auth_key": ka, "retain": true})
+	// Ask for a 30-day TTL; the broker must cap it to the 7-day max.
+	const channel = "anon/retained"
+	body, _ := json.Marshal(map[string]any{
+		"channel": channel, "auth_key": ka, "retain": true, "ttl_sec": 30 * 24 * 3600,
+	})
 	resp, err := http.Post(httpURL+"/channel", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("anonymous retained create = %d, want 401", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("anonymous retained create = %d, want 200", resp.StatusCode)
+	}
+	ch, err := st.GetChannel(channel)
+	if err != nil {
+		t.Fatalf("GetChannel: %v", err)
+	}
+	if !ch.Retained {
+		t.Fatal("channel should be retained")
+	}
+	const sevenDays = int64(7 * 24 * 3600)
+	if ch.TTLSeconds != sevenDays {
+		t.Fatalf("anonymous TTL = %d, want capped at %d (7 days)", ch.TTLSeconds, sevenDays)
+	}
+	if ch.OwnerID != "" {
+		t.Fatalf("anonymous channel owner = %q, want empty", ch.OwnerID)
 	}
 }
 

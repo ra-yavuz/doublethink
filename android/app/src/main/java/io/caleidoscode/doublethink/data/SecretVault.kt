@@ -1,8 +1,10 @@
 package io.caleidoscode.doublethink.data
 
 import android.content.Context
+import android.util.Base64
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import io.caleidoscode.doublethink.crypto.SealedBox
 
 /**
  * Stores per-topic shared secrets (S) encrypted at rest via EncryptedSharedPreferences
@@ -36,5 +38,41 @@ class SecretVault(context: Context) {
 
     fun remove(topicId: String) {
         prefs.edit().remove(topicId).apply()
+    }
+
+    // --- Sealed-box keypair (one per device, for SEALED inbox topics) ---
+    //
+    // A single Curve25519 keypair is stored under a reserved key (not a topic id),
+    // base64 of publicKey||secretKey. The public key is what the user publishes (on a
+    // contact page); the private key never leaves this vault except via an explicit
+    // passphrase-encrypted backup the user chooses to export.
+
+    /** Returns the device sealed-box keypair, generating and storing it on first use. */
+    fun boxKeypair(): SealedBox.Keypair {
+        prefs.getString(BOX_KEY, null)?.let { stored ->
+            val raw = Base64.decode(stored, Base64.NO_WRAP)
+            if (raw.size == SealedBox.PUBLICKEY_BYTES + SealedBox.SECRETKEY_BYTES) {
+                return SealedBox.Keypair(
+                    publicKey = raw.copyOfRange(0, SealedBox.PUBLICKEY_BYTES),
+                    secretKey = raw.copyOfRange(SealedBox.PUBLICKEY_BYTES, raw.size),
+                )
+            }
+        }
+        val kp = SealedBox.generateKeypair()
+        storeBoxKeypair(kp)
+        return kp
+    }
+
+    /** True if a sealed-box keypair already exists (so the UI can avoid generating one early). */
+    fun hasBoxKeypair(): Boolean = prefs.getString(BOX_KEY, null) != null
+
+    /** Replace the stored keypair (used by backup import). */
+    fun storeBoxKeypair(kp: SealedBox.Keypair) {
+        val raw = kp.publicKey + kp.secretKey
+        prefs.edit().putString(BOX_KEY, Base64.encodeToString(raw, Base64.NO_WRAP)).apply()
+    }
+
+    private companion object {
+        const val BOX_KEY = "__box_keypair__"
     }
 }

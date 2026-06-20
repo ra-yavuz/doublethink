@@ -411,38 +411,57 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Past the ticket path, a key is mandatory: only an admin grant authorizes a
-	// plaintext (keyless) topic. A keyless non-ticket request is rejected so the
-	// open retention path cannot be opened without a grant.
-	if plaintext {
-		http.Error(w, "auth_key required (a plaintext topic needs an admin grant ticket)", http.StatusBadRequest)
+	// Past the ticket path: a keyless request is only meaningful WITH retention. A
+	// keyless RETAINED topic is a plaintext (or sealed-ciphertext-carrying) inbox
+	// reached on the open /publish + /subscribe path; it is allowed anonymously on the
+	// capped public tier below. A keyless EPHEMERAL request is rejected: an ad-hoc open
+	// topic needs no create call at all (just publish/subscribe), so a keyless
+	// non-retained create would be a no-op that only pollutes the registry.
+	if plaintext && !req.Retain {
+		http.Error(w, "auth_key required, or set retain:true for a public retained topic", http.StatusBadRequest)
 		return
 	}
 
-	// Retained channels require the store AND an authenticated account. Anonymous
-	// retained channels are refused (they would be an unbounded-storage hole).
+	// Retained channels. An account holder gets the full per-account quota. An
+	// ANONYMOUS caller (no account) also gets retention now, but a strictly capped
+	// tier: TTL is forced to at most RetentionTTLMax (7 days) and the per-channel
+	// byte/message caps apply, so a public visitor gets durable catch-up without an
+	// account. The storage hole anonymous retention could open is bounded three ways:
+	// the per-IP channel-create rate limit (applied at the top of this handler), the
+	// per-channel MaxBytes/MaxMsgs ring buffer, and automatic TTL expiry. This is the
+	// public "some retention, up to 7 days" tier.
 	if req.Retain {
 		if s.store == nil {
 			http.Error(w, "retention not available on this instance", http.StatusNotImplemented)
 			return
 		}
-		owner := s.authedAccount(r)
-		if owner == "" {
-			http.Error(w, "retained channels require an account (POST /account, then Authorization: Bearer + X-Doublethink-Account)", http.StatusUnauthorized)
-			return
-		}
+		owner := s.authedAccount(r) // "" for an anonymous caller; allowed, just capped
+		anon := owner == ""
+		// Default TTL: accounts get the standard default; anonymous channels default to
+		// the 7-day max so a contact-style inbox keeps a week of catch-up unless asked
+		// for less. Either way TTL is hard-capped at RetentionTTLMax.
 		ttl := s.lim.RetentionTTL
+		if anon {
+			ttl = s.lim.RetentionTTLMax
+		}
 		if req.TTLSec > 0 {
 			ttl = time.Duration(req.TTLSec) * time.Second
-			if ttl > s.lim.RetentionTTLMax {
-				ttl = s.lim.RetentionTTLMax
-			}
+		}
+		if ttl > s.lim.RetentionTTLMax {
+			ttl = s.lim.RetentionTTLMax
 		}
 		ch := store.Channel{
 			ID: req.Channel, OwnerID: owner, KAuth: req.AuthKey, Retained: true,
 			TTLSeconds: int64(ttl.Seconds()), MaxBytes: s.lim.BytesPerChannel, MaxMsgs: int64(s.lim.RetainedMsgsPerChan),
 		}
-		if err := s.store.CreateChannel(ch, s.lim.ChannelsPerAccount); err != nil {
+		// Account holders are bounded by their per-account channel quota; anonymous
+		// channels are not counted against any account, so pass an effectively
+		// unbounded per-owner cap (the per-IP create limiter is their bound instead).
+		ownerChanCap := s.lim.ChannelsPerAccount
+		if anon {
+			ownerChanCap = 1 << 30
+		}
+		if err := s.store.CreateChannel(ch, ownerChanCap); err != nil {
 			switch {
 			case errors.Is(err, store.ErrExists):
 				http.Error(w, "channel already exists", http.StatusConflict)
@@ -453,10 +472,17 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		// Mirror into the in-memory auth registry for fast admission.
-		_ = s.reg.Register(req.Channel, authKey)
+		// An ENCRYPTED retained channel goes into the in-memory auth registry (which
+		// also blocks the open path for that id). A keyless PLAINTEXT retained topic
+		// stays OUT of the registry so /publish + /subscribe can reach it with no key
+		// ceremony (this is how a sealed-ciphertext-carrying contact inbox is reached).
+		if !plaintext {
+			_ = s.reg.Register(req.Channel, authKey)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"channel": req.Channel, "created": true, "retained": true})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"channel": req.Channel, "created": true, "retained": true, "encrypted": !plaintext,
+		})
 		return
 	}
 
@@ -822,6 +848,14 @@ func (s *Server) handlePublicPublish(w http.ResponseWriter, r *http.Request) {
 	}
 	topic := strings.TrimPrefix(r.URL.Path, "/publish/")
 	if !s.guardPublicTopic(w, topic) {
+		return
+	}
+	// Rate-limit the open publish path the same way the WS path is limited (see
+	// pumpWS): per channel, plus per source IP, so an open topic (for example a
+	// public sealed contact inbox) cannot be flood-published. This closes the gap
+	// where the HTTP publish path had no publish rate limit at all.
+	if !s.pubChan.Allow(topic) || !s.pubChan.Allow("ip:"+clientIP(r)) {
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
 		return
 	}
 	body := make([]byte, 0, 512)

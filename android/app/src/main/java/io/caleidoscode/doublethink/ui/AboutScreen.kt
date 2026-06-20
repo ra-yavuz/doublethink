@@ -17,7 +17,7 @@ import androidx.compose.ui.unit.dp
  * project). Also states the honest delivery limitation plainly.
  */
 @Composable
-fun AboutScreen(modifier: Modifier = Modifier) {
+fun AboutScreen(modifier: Modifier = Modifier, sealedPublicKey: String? = null) {
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -32,6 +32,23 @@ fun AboutScreen(modifier: Modifier = Modifier) {
                 "message arrives.",
             style = MaterialTheme.typography.bodyMedium,
         )
+
+        if (sealedPublicKey != null) {
+            Text("Your sealed-inbox public key", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Publish this key (for example on a contact page). Anyone can use it to send " +
+                    "you a sealed message that only this device can open. It is safe to share. " +
+                    "Sealed messages are anonymous (the sender is not verified), and the broker " +
+                    "sees only that and when a message arrived, never its contents.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(sealedPublicKey, style = MaterialTheme.typography.bodySmall)
+            Text(
+                "Keep your key safe: if you lose this device without a backup, messages sealed " +
+                    "to this key can no longer be read.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
 
         Text("Delivery limitation", style = MaterialTheme.typography.titleMedium)
         Text(

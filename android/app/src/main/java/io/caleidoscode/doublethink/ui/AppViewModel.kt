@@ -91,6 +91,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** This device's sealed-box public key, base64, safe to publish (e.g. on a contact page). */
+    fun boxPublicKeyBase64(): String =
+        android.util.Base64.encodeToString(vault.boxKeypair().publicKey, android.util.Base64.NO_WRAP)
+
+    /**
+     * Add a SEALED inbox topic: an open topic that carries sealed-box ciphertext, openable
+     * only by this device. Subscribe-only. No secret needed; uses the device box keypair.
+     */
+    fun addSealedTopic(displayName: String, serverBaseUrl: String, channelId: String) {
+        viewModelScope.launch {
+            val id = UUID.randomUUID().toString()
+            store.upsert(
+                Topic(
+                    id = id, displayName = displayName.ifBlank { channelId },
+                    serverBaseUrl = serverBaseUrl, channelId = channelId, mode = TopicMode.SEALED,
+                ),
+            )
+            SubscriptionService.start(getApplication())
+        }
+    }
+
     fun removeTopic(topic: Topic) {
         viewModelScope.launch {
             store.remove(topic.id)

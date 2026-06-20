@@ -2,8 +2,15 @@ package io.caleidoscode.doublethink.model
 
 import io.caleidoscode.doublethink.crypto.Role
 
-/** Whether a topic is an end-to-end-encrypted private channel or a plaintext one. */
-enum class TopicMode { ENCRYPTED, PLAINTEXT }
+/**
+ * How a topic is secured:
+ *  - ENCRYPTED: a two-party shared-secret private channel (WebSocket, symmetric).
+ *  - PLAINTEXT: an open ntfy-style topic (SSE), no encryption.
+ *  - SEALED: an open topic that carries sealed-box (public-key) ciphertext. Anyone
+ *    can publish to it sealed to this device's public key; only this device, holding
+ *    the private key, can open it. Receive-only on the phone (e.g. a contact inbox).
+ */
+enum class TopicMode { ENCRYPTED, PLAINTEXT, SEALED }
 
 /**
  * A subscribed topic's configuration. The shared secret S is NOT stored here; it

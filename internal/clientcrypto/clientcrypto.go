@@ -40,6 +40,7 @@ import (
 
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/crypto/hkdf"
+	"golang.org/x/crypto/nacl/box"
 	"golang.org/x/crypto/nacl/secretbox"
 )
 
@@ -215,4 +216,65 @@ func (s *Session) Open(blob []byte) ([]byte, error) {
 		return nil, errors.New("decryption failed (wrong secret or tampered)")
 	}
 	return out, nil
+}
+
+// --- Sealed boxes (anonymous public-key encryption) ---
+//
+// The shared-secret model above is for two parties who already hold S. A sealed
+// box (NaCl crypto_box_seal: Curve25519 + XSalsa20-Poly1305) covers the OTHER
+// case: anyone can encrypt TO a published public key, and only the keyholder can
+// read it. This is what lets a public web page (which can only ever hold a public
+// key) send a message that the operator AND the public cannot read, while only the
+// recipient's device, holding the private key, can open it.
+//
+// The construction generates a fresh ephemeral keypair per message and discards
+// the ephemeral private key, so even the sender cannot decrypt afterward. The
+// nonce is BLAKE2b(ephemeral_pub || recipient_pub) with output length 24, and the
+// output layout is ephemeral_pub(32) || box, byte-identical to libsodium's
+// crypto_box_seal and to a tweetnacl hand-build (see the JS client).
+//
+// Honest limits: sealed boxes are ANONYMOUS. There is no sender authenticity (no
+// signature, no identity); anyone can seal to the public key, so an open inbox is
+// spam-able and the recipient cannot verify who sent a message. There is no
+// forward secrecy beyond the per-message ephemeral key. Losing the private key
+// makes every message sealed to it permanently unreadable.
+
+// BoxPublicKeySize and BoxPrivateKeySize are the Curve25519 key lengths.
+const (
+	BoxPublicKeySize  = 32
+	BoxPrivateKeySize = 32
+)
+
+// BoxKeypair is a Curve25519 keypair for sealed-box (anonymous) encryption. The
+// public key is safe to publish; the private key must stay on the recipient's
+// device.
+type BoxKeypair struct {
+	Public  [BoxPublicKeySize]byte
+	Private [BoxPrivateKeySize]byte
+}
+
+// GenerateBoxKeypair returns a fresh Curve25519 keypair for sealed boxes.
+func GenerateBoxKeypair() (BoxKeypair, error) {
+	pub, priv, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		return BoxKeypair{}, fmt.Errorf("generating box keypair: %w", err)
+	}
+	return BoxKeypair{Public: *pub, Private: *priv}, nil
+}
+
+// SealTo anonymously encrypts msg to recipientPub. It uses a fresh ephemeral
+// keypair that is discarded, so the sender cannot decrypt the result. Output is
+// ephemeral_pub(32) || box, byte-compatible with libsodium crypto_box_seal.
+func SealTo(recipientPub [BoxPublicKeySize]byte, msg []byte) ([]byte, error) {
+	sealed, err := box.SealAnonymous(nil, msg, &recipientPub, rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("sealing: %w", err)
+	}
+	return sealed, nil
+}
+
+// OpenSealed decrypts a sealed blob with the recipient keypair. Returns false on
+// any failure (wrong key, tampered, or truncated).
+func OpenSealed(kp BoxKeypair, blob []byte) ([]byte, bool) {
+	return box.OpenAnonymous(nil, blob, &kp.Public, &kp.Private)
 }

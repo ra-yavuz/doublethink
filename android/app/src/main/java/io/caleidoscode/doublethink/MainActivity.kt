@@ -91,7 +91,7 @@ private fun AppRoot(vm: AppViewModel) {
             onAbout = { screen = Screen.ABOUT },
             onRemove = { vm.removeTopic(it) },
         )
-        Screen.ABOUT -> AboutScreen()
+        Screen.ABOUT -> AboutScreen(sealedPublicKey = remember { vm.boxPublicKeyBase64() })
         Screen.ADD -> AddTopicScreen(
             initialSecret = pendingSecret,
             statusText = addStatus,
@@ -108,6 +108,9 @@ private fun AppRoot(vm: AppViewModel) {
             },
             onCreatePlaintext = { name, server, channel ->
                 vm.addPlaintextTopic(name, server, channel); screen = Screen.LIST
+            },
+            onCreateSealed = { name, server, channel ->
+                vm.addSealedTopic(name, server, channel); screen = Screen.LIST
             },
             onCancel = { screen = Screen.LIST },
         )
